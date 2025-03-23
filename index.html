@@ -71,7 +71,7 @@
   <div id="container">
     <!-- Видео с камеры -->
     <video id="video" autoplay playsinline muted></video>
-    <!-- Canvas для отрисовки видео и рукопожатия -->
+    <!-- Canvas для отрисовки видео и рук -->
     <canvas id="output"></canvas>
     <!-- Слой для рисования линий (рисование жестом) -->
     <canvas id="drawLayer"></canvas>
@@ -111,9 +111,9 @@
 
     // Переменная для хранения текущего режима камеры ("user" - передняя, "environment" - задняя)
     let currentFacingMode = "user";
-    let camera;
+    let cameraInstance;
 
-    // Функция перехода в полноэкранный режим
+    // Кнопка перехода в полноэкранный режим
     fullscreenBtn.addEventListener('click', () => {
       if (document.fullscreenElement) {
         document.exitFullscreen();
@@ -122,12 +122,27 @@
       }
     });
 
-    // Функция для инициализации (или переинициализации) камеры
-    function startCamera() {
-      if (camera) {
-        camera.stop();
+    // Функция для инициализации камеры с явным запросом доступа
+    async function startCamera() {
+      // Запрашиваем доступ к камере вручную
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 640, height: 480, facingMode: currentFacingMode },
+          audio: false
+        });
+        videoElement.srcObject = stream;
+        await videoElement.play();
+      } catch (err) {
+        console.error("Ошибка доступа к камере:", err);
+        return;
       }
-      camera = new Camera(videoElement, {
+
+      // Если уже создан экземпляр камеры Mediapipe, остановим его
+      if (cameraInstance) {
+        cameraInstance.stop();
+      }
+      // Создаём и запускаем объект камеры от Mediapipe
+      cameraInstance = new Camera(videoElement, {
         onFrame: async () => {
           await hands.send({ image: videoElement });
         },
@@ -135,10 +150,10 @@
         height: 480,
         facingMode: currentFacingMode
       });
-      camera.start();
+      cameraInstance.start();
     }
 
-    // Кнопка для переключения камеры
+    // Кнопка для переключения между передней и задней камерой
     switchCameraBtn.addEventListener('click', () => {
       currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
       startCamera();
@@ -156,11 +171,11 @@
       overlayCanvas.height = height;
     }
 
-    // ------------------ Mediapipe Hands для распознавания руки ------------------
-    let fistCount = 0;        // счетчик сжатия кулака
-    let gestureActive = false; // режим рисования активен
-    let lastFistState = false; // предыдущее состояние кулака
-    let lastTimeFist = 0;      // время последнего изменения состояния для дебаунса
+    // ------------------ Mediapipe Hands для распознавания рук ------------------
+    let fistCount = 0;
+    let gestureActive = false;
+    let lastFistState = false;
+    let lastTimeFist = 0;
 
     function isFingerExtended(landmarks, pipIdx, tipIdx) {
       const pip = landmarks[pipIdx];
@@ -343,7 +358,7 @@
 
     window.addEventListener('resize', resizeCanvases);
 
-    // Запуск камеры
+    // Запуск камеры с запросом доступа
     startCamera();
   </script>
 </body>
