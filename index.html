@@ -28,7 +28,7 @@
       object-fit: cover;
       transform: scaleX(-1);
     }
-    /* Canvas для дополнительных оверлеев (лица, объекты) */
+    /* Canvas для оверлеев (лица, объекты) */
     #overlay {
       z-index: 15;
       pointer-events: none;
@@ -71,27 +71,30 @@
   <div id="container">
     <!-- Видео с камеры -->
     <video id="video" autoplay playsinline muted></video>
-    <!-- Canvas для отрисовки видео и рук -->
+    <!-- Canvas для отрисовки видео и рамок рук -->
     <canvas id="output"></canvas>
-    <!-- Слой для рисования линий (рисование жестом) -->
+    <!-- Canvas для рисования линий (например, по жесту) -->
     <canvas id="drawLayer"></canvas>
     <!-- Дополнительный canvas для оверлеев (лица, объекты) -->
     <canvas id="overlay"></canvas>
     <div id="info">
-      Жесты: два раза сжать/разжать кулак + указательный = начать рисование; OK = очистить<br>
-      Лицо: возраст и эмоция; Объекты: опасные/предметы.
+      Лица: зелёная – спокойные, красная – негативные<br>
+      Объекты: жёлтые – обычные, красные – опасные<br>
+      Жесты: два раза сжать/разжать кулак + указательный = рисование; OK = очистка<br>
+      Кнопки: "Повернуть камеру", "Полный экран"
     </div>
     <button id="switchCameraBtn">Повернуть камеру</button>
     <button id="fullscreenBtn">Полный экран</button>
   </div>
 
+  <!-- Подключение библиотек -->
   <!-- Mediapipe Hands -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-  <!-- Face API для распознавания лиц -->
+  <!-- Face API (убедитесь, что модели доступны по пути /models) -->
   <script src="https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"></script>
-  <!-- TensorFlow.js и COCO-SSD для обнаружения объектов -->
+  <!-- TensorFlow.js и COCO-SSD -->
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.20.0/dist/tf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
@@ -109,11 +112,11 @@
     const drawCtx = drawCanvas.getContext('2d');
     const overlayCtx = overlayCanvas.getContext('2d');
 
-    // Переменная для хранения текущего режима камеры ("user" - передняя, "environment" - задняя)
+    // Режим камеры: "user" (передняя) или "environment" (задняя)
     let currentFacingMode = "user";
     let cameraInstance;
 
-    // Кнопка перехода в полноэкранный режим
+    // Полноэкранный режим
     fullscreenBtn.addEventListener('click', () => {
       if (document.fullscreenElement) {
         document.exitFullscreen();
@@ -122,9 +125,8 @@
       }
     });
 
-    // Функция для инициализации камеры с явным запросом доступа
+    // Запрос доступа к камере и запуск
     async function startCamera() {
-      // Запрашиваем доступ к камере вручную
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { width: 640, height: 480, facingMode: currentFacingMode },
@@ -136,12 +138,9 @@
         console.error("Ошибка доступа к камере:", err);
         return;
       }
-
-      // Если уже создан экземпляр камеры Mediapipe, остановим его
       if (cameraInstance) {
         cameraInstance.stop();
       }
-      // Создаём и запускаем объект камеры от Mediapipe
       cameraInstance = new Camera(videoElement, {
         onFrame: async () => {
           await hands.send({ image: videoElement });
@@ -153,13 +152,13 @@
       cameraInstance.start();
     }
 
-    // Кнопка для переключения между передней и задней камерой
+    // Переключение камеры
     switchCameraBtn.addEventListener('click', () => {
-      currentFacingMode = currentFacingMode === "user" ? "environment" : "user";
+      currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
       startCamera();
     });
 
-    // Функция изменения размеров canvas
+    // Изменение размеров canvas
     function resizeCanvases() {
       const width = videoElement.videoWidth || window.innerWidth;
       const height = videoElement.videoHeight || window.innerHeight;
@@ -171,7 +170,7 @@
       overlayCanvas.height = height;
     }
 
-    // ------------------ Mediapipe Hands для распознавания рук ------------------
+    // ------------------ Mediapipe Hands (распознавание руки и жесты) ------------------
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
@@ -185,7 +184,6 @@
       const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
       return distTip > distPip * 1.3;
     }
-
     function isFist(landmarks) {
       const fingers = [
         { pip: 6, tip: 8 },
@@ -194,21 +192,15 @@
         { pip: 18, tip: 20 }
       ];
       let thumbExtended = isFingerExtended(landmarks, 2, 4);
-      let otherFingersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return (!thumbExtended) && otherFingersFolded;
+      let othersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
+      return (!thumbExtended) && othersFolded;
     }
-
     function isIndexPointing(landmarks) {
       const indexExtended = isFingerExtended(landmarks, 6, 8);
-      const otherFingers = [
-        { pip: 10, tip: 12 },
-        { pip: 14, tip: 16 },
-        { pip: 18, tip: 20 }
-      ];
-      let othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
+      const othersFolded = [{ pip: 10, tip: 12 }, { pip: 14, tip: 16 }, { pip: 18, tip: 20 }]
+                              .every(f => !isFingerExtended(landmarks, f.pip, f.tip));
       return indexExtended && othersFolded;
     }
-
     function isOkGesture(landmarks) {
       const thumbTip = landmarks[4];
       const indexTip = landmarks[8];
@@ -289,16 +281,17 @@
       outputCtx.restore();
     });
 
-    // ------------------ Face API и COCO-SSD для распознавания лиц и объектов ------------------
+    // ------------------ Распознавание лиц и объектов ------------------
     let cocoModel = null;
+    // Список опасных/убийственных объектов (можно расширять)
     const dangerousObjects = ['knife', 'scissors', 'gun'];
 
     async function loadModels() {
-      // Загрузка моделей для face-api (поменяйте URL на корректный путь к моделям)
-      await faceapi.nets.tinyFaceDetector.loadFromUri('https://justadomain.com/models');
-      await faceapi.nets.ageGenderNet.loadFromUri('https://justadomain.com/models');
-      await faceapi.nets.faceExpressionNet.loadFromUri('https://justadomain.com/models');
-      // Загрузка модели COCO-SSD
+      // Загрузка моделей для face-api.js – разместите файлы моделей в папке "models"
+      await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
+      await faceapi.nets.ageGenderNet.loadFromUri('/models');
+      await faceapi.nets.faceExpressionNet.loadFromUri('/models');
+      // Загрузка модели COCO‑SSD
       cocoModel = await cocoSsd.load();
       console.log("Все модели загружены");
     }
@@ -309,13 +302,14 @@
         .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions())
         .withAgeAndGender()
         .withFaceExpressions();
-
+      // Очищаем overlay
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-
       detections.forEach(detection => {
         const { age, expressions, detection: box } = detection;
+        // Определяем доминирующую эмоцию
         const sorted = Object.entries(expressions).sort((a, b) => b[1] - a[1]);
         const emotion = sorted[0][0];
+        // Если эмоция "angry" или "disgusted" – красная рамка, иначе зелёная
         const color = (emotion === 'angry' || emotion === 'disgusted') ? 'red' : 'lime';
         overlayCtx.strokeStyle = color;
         overlayCtx.lineWidth = 2;
@@ -333,6 +327,7 @@
         const [x, y, width, height] = pred.bbox;
         let color = 'yellow';
         let label = pred.class;
+        // Если класс объекта входит в список опасных – рамка красная с подписью "опасный"
         if (dangerousObjects.includes(pred.class.toLowerCase())) {
           color = 'red';
           label = `опасный: ${pred.class}`;
@@ -358,7 +353,7 @@
 
     window.addEventListener('resize', resizeCanvases);
 
-    // Запуск камеры с запросом доступа
+    // Запуск камеры
     startCamera();
   </script>
 </body>
