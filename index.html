@@ -25,6 +25,8 @@
       width: 100%;
       height: 100%;
       object-fit: cover;
+      /* Убираем зеркальное отражение, если оно установлено */
+      transform: none;
     }
     #info {
       position: absolute;
@@ -41,9 +43,9 @@
   <div id="container">
     <!-- Видео с камеры -->
     <video id="video" autoplay playsinline muted></video>
-    <!-- Canvas для отрисовки результатов (рамки, линии рисования) -->
+    <!-- Canvas для отрисовки результатов (рамки, результаты обработки) -->
     <canvas id="output"></canvas>
-    <!-- Слой для рисования линий (чтобы линии не стирались при обновлении видео) -->
+    <!-- Canvas для рисования линий -->
     <canvas id="drawLayer"></canvas>
     <div id="info">Жесты: два раза сжать/разжать кулак + указательный = начать рисование; OK = очистить</div>
   </div>
@@ -62,7 +64,7 @@
     const outputCtx = outputCanvas.getContext('2d');
     const drawCtx = drawCanvas.getContext('2d');
 
-    // Изменяем размеры canvas под размер окна
+    // Функция для изменения размеров canvas под размер окна/видео
     function resizeCanvases() {
       outputCanvas.width = videoElement.videoWidth || window.innerWidth;
       outputCanvas.height = videoElement.videoHeight || window.innerHeight;
@@ -70,40 +72,36 @@
       drawCanvas.height = outputCanvas.height;
     }
 
-    // Переменные для управления состояниями жестов
+    // Переменные для управления жестами
     let fistCount = 0;        // счетчик сжатия кулака
     let gestureActive = false; // режим рисования активен
-    let lastFistState = false; // предыдущее состояние кулака (сжат или нет)
-    let lastTimeFist = 0;      // время последнего изменения состояния для дебаунса
+    let lastFistState = false; // предыдущее состояние кулака
+    let lastTimeFist = 0;      // время последнего изменения состояния
 
-    // Функции для определения "сжатости" пальцев.
-    // Простая эвристика: если расстояние между tip и pip меньше заданного порога относительно расстояния от запястья.
+    // Простейшая эвристика для определения вытянутого пальца
     function isFingerExtended(landmarks, pipIdx, tipIdx) {
       const pip = landmarks[pipIdx];
       const tip = landmarks[tipIdx];
       const wrist = landmarks[0];
-      // Евристика: если расстояние от tip до запястья значительно больше, чем от pip до запястья
       const distTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
       const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
       return distTip > distPip * 1.3;
     }
 
-    // Проверка жеста "кулак" – все пальцы не вытянуты
+    // Определяем жест "кулак" – все пальцы (за исключением большого) не вытянуты
     function isFist(landmarks) {
-      // Для каждого пальца (индекс, средний, безымянный, мизинец) проверяем, что он не вытянут
       const fingers = [
-        { pip: 6, tip: 8 },  // указательный
+        { pip: 6, tip: 8 },   // указательный
         { pip: 10, tip: 12 }, // средний
         { pip: 14, tip: 16 }, // безымянный
         { pip: 18, tip: 20 }  // мизинец
       ];
-      // Для большого пальца можно задать отдельное условие (например, угол относительно запястья)
       let thumbExtended = isFingerExtended(landmarks, 2, 4);
       let otherFingersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
       return (!thumbExtended) && otherFingersFolded;
     }
 
-    // Проверка жеста "указательный" – указательный палец вытянут, остальные нет
+    // Жест "указательный" – указательный палец вытянут, остальные нет
     function isIndexPointing(landmarks) {
       const indexExtended = isFingerExtended(landmarks, 6, 8);
       const otherFingers = [
@@ -112,18 +110,16 @@
         { pip: 18, tip: 20 }
       ];
       let othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      // Можно добавить проверку для большого пальца: он может быть закрыт или несущественен
       return indexExtended && othersFolded;
     }
 
-    // Проверка жеста OK – расстояние между большим и указательным пальцами маленькое
+    // Жест "OK" – кончики большого и указательного пальцев рядом
     function isOkGesture(landmarks) {
       const thumbTip = landmarks[4];
       const indexTip = landmarks[8];
       const dx = thumbTip.x - indexTip.x;
       const dy = thumbTip.y - indexTip.y;
       const dist = Math.hypot(dx, dy);
-      // Порог можно настроить, здесь берём 0.05 в нормированных координатах
       return dist < 0.05;
     }
 
@@ -142,12 +138,13 @@
 
     // Обработка результатов от Mediapipe
     hands.onResults((results) => {
-      // Обновляем размеры canvas при получении первых данных
+      // При получении первых данных обновляем размеры canvas
       if (!outputCanvas.width || !outputCanvas.height) {
         resizeCanvases();
       }
       
-      // Отрисовываем видео-кадр на основном canvas
+      // Сбрасываем трансформацию (убираем зеркальное отражение)
+      outputCtx.setTransform(1, 0, 0, 1, 0, 0);
       outputCtx.save();
       outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
       outputCtx.drawImage(results.image, 0, 0, outputCanvas.width, outputCanvas.height);
@@ -163,19 +160,16 @@
           if (pt.x > maxX) maxX = pt.x;
           if (pt.y > maxY) maxY = pt.y;
         });
-        // Преобразуем нормированные координаты в координаты canvas
         const boxX = minX * outputCanvas.width;
         const boxY = minY * outputCanvas.height;
         const boxW = (maxX - minX) * outputCanvas.width;
         const boxH = (maxY - minY) * outputCanvas.height;
-        // Рисуем зелёную рамку
         outputCtx.strokeStyle = 'lime';
         outputCtx.lineWidth = 3;
         outputCtx.strokeRect(boxX, boxY, boxW, boxH);
 
         // Логика распознавания жестов
         const now = Date.now();
-        // Дебаунс изменений состояния
         if (now - lastTimeFist > 700) { 
           const fist = isFist(landmarks);
           if (fist !== lastFistState) {
@@ -187,35 +181,25 @@
             }
           }
         }
-        // Если зафиксировано два сжатия и затем показан указательный палец, включаем режим рисования
         if (!gestureActive && fistCount >= 2 && isIndexPointing(landmarks)) {
           gestureActive = true;
           console.log("Режим рисования активирован");
         }
-        // Если рисование активно, рисуем линию за указательным пальцем
         if (gestureActive) {
-          // Получаем координаты указательного пальца
           const indexTip = landmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
-          // Рисуем точку (можно соединять точки для непрерывной линии)
           drawCtx.fillStyle = 'black';
           drawCtx.beginPath();
           drawCtx.arc(x, y, 4, 0, 2 * Math.PI);
           drawCtx.fill();
         }
-        // Если обнаружен жест OK, очищаем рисунок и сбрасываем счетчик
         if (gestureActive && isOkGesture(landmarks)) {
           console.log("Жест OK обнаружен, очистка холста");
           drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-          // Сброс состояний для повторного запуска
           gestureActive = false;
           fistCount = 0;
         }
-        
-        // Дополнительно можно отрисовывать точки ключевых точек (опционально)
-        // window.drawConnectors(outputCtx, landmarks, Hands.HAND_CONNECTIONS, {color: '#00FF00', lineWidth: 2});
-        // window.drawLandmarks(outputCtx, landmarks, {color: '#FF0000', lineWidth: 1});
       }
       outputCtx.restore();
     });
@@ -230,7 +214,6 @@
     });
     camera.start();
 
-    // При изменении размера окна – обновляем размеры canvas
     window.addEventListener('resize', resizeCanvases);
   </script>
 </body>
