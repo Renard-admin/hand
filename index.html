@@ -19,18 +19,27 @@
       height: 100vh;
       background: #000;
     }
-    video, canvas {
+    /* Видео получаем с зеркальным эффектом */
+    video {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
-    }
-    /* Зеркальный эффект (по умолчанию включён) */
-    .mirror {
       transform: scaleX(-1);
     }
+    /* Canvas для рамок и рисования наследует зеркальный эффект, чтобы совпадать с видео */
+    canvas.mirror {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+    /* Текст для рамок будем рисовать на том же canvas, но с временным сбросом трансформации */
     #info {
       position: absolute;
       top: 10px;
@@ -64,17 +73,17 @@
 </head>
 <body>
   <div id="container">
-    <!-- Видео с камеры -->
-    <video id="video" autoplay playsinline muted class="mirror"></video>
-    <!-- Canvas для отрисовки рамок (рук, лиц, объектов) -->
+    <!-- Видео с камеры (отображается зеркально) -->
+    <video id="video" autoplay playsinline muted></video>
+    <!-- Canvas для отрисовки рамок (на него накладывается зеркальный эффект через класс) -->
     <canvas id="overlay" class="mirror"></canvas>
-    <!-- Canvas для рисования (режим рисования) -->
+    <!-- Canvas для рисования (режим рисования); также зеркально -->
     <canvas id="drawLayer" class="mirror"></canvas>
     <div id="info">
-      Жесты: дважды сжать/разжать кулак + указательный = режим рисования;<br>
-      Жест OK = очистка рисунка;<br>
-      Лицо: возраст и эмоция; Объекты: опасные (красные), еда (зелёные), остальные (жёлтые)<br>
-      (Рука выделяется зелёной рамкой)
+      Жесты: дважды сжать/разжать кулак + указательный = режим рисования<br>
+      Жест OK = очистка рисунка<br>
+      Лицо: (желтая рамка, над ней – возраст и настроение)<br>
+      Рука и еда – зеленая, опасные объекты – красная, остальные – желтая
     </div>
     <div id="controls">
       <button id="fullscreenBtn">Полный экран</button>
@@ -107,65 +116,56 @@
     const container = document.getElementById('container');
 
     // Глобальные переменные камеры
-    let currentFacingMode = "user"; // "user" или "environment"
+    let currentFacingMode = "user";
     let stream = null;
 
-    // Глобальные переменные для распознавания рук и жестов
+    // Переменные для распознавания рук и жестов
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
     let lastTimeFist = 0;
     let lastDrawPoint = null;
     let latestHandLandmarks = null;
+    let lastHandBox = null; // для сглаживания рамки руки
 
-    // Глобальные переменные для распознавания лиц и объектов
+    // Переменные для распознавания лиц и объектов
     let faceModelsLoaded = false;
     let faceDetectionOptions;
     let latestFaceDetections = [];
     let cocoModel = null;
     let latestObjectDetections = [];
 
-    // Интервалы для периодической детекции (мс)
+    // Интервалы для детекции (мс)
     const FACE_INTERVAL = 700;
     const OBJECT_INTERVAL = 700;
 
-    // Функции для определения состояния пальцев (эвристика)
+    // Функции определения положения пальцев
     function isFingerExtended(landmarks, pipIdx, tipIdx) {
-      const pip = landmarks[pipIdx];
-      const tip = landmarks[tipIdx];
-      const wrist = landmarks[0];
-      const distTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
-      const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
-      return distTip > distPip * 1.3;
+      const pip = landmarks[pipIdx], tip = landmarks[tipIdx], wrist = landmarks[0];
+      return Math.hypot(tip.x - wrist.x, tip.y - wrist.y) > 1.3 * Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
     }
     function isFist(landmarks) {
-      const fingers = [
-        { pip: 6, tip: 8 },
-        { pip: 10, tip: 12 },
-        { pip: 14, tip: 16 },
-        { pip: 18, tip: 20 }
-      ];
+      const fingers = [{pip:6, tip:8}, {pip:10, tip:12}, {pip:14, tip:16}, {pip:18, tip:20}];
       const thumbExtended = isFingerExtended(landmarks, 2, 4);
-      const othersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return (!thumbExtended) && othersFolded;
+      return (!thumbExtended) && fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
     }
     function isIndexPointing(landmarks) {
       const indexExtended = isFingerExtended(landmarks, 6, 8);
-      const otherFingers = [
-        { pip: 10, tip: 12 },
-        { pip: 14, tip: 16 },
-        { pip: 18, tip: 20 }
-      ];
-      const othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return indexExtended && othersFolded;
+      const others = [{pip:10, tip:12}, {pip:14, tip:16}, {pip:18, tip:20}];
+      return indexExtended && others.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
     }
     function isOkGesture(landmarks) {
-      const thumbTip = landmarks[4];
-      const indexTip = landmarks[8];
-      const dx = thumbTip.x - indexTip.x;
-      const dy = thumbTip.y - indexTip.y;
-      const dist = Math.hypot(dx, dy);
-      return dist < 0.05;
+      const dx = landmarks[4].x - landmarks[8].x, dy = landmarks[4].y - landmarks[8].y;
+      return Math.hypot(dx, dy) < 0.05;
+    }
+
+    // Функция для рисования текста без зеркального эффекта
+    function drawTextUnmirrored(ctx, text, x, y) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      // Отзеркаливаем x: т.к. overlay имеет размер overlayCanvas.width
+      ctx.fillText(text, overlayCanvas.width - x, y);
+      ctx.restore();
     }
 
     // Кнопки управления
@@ -181,16 +181,15 @@
       initCamera(currentFacingMode);
     });
     toggleMirrorBtn.addEventListener('click', () => {
+      // Меняем класс mirror у видео и обоих canvas
       video.classList.toggle('mirror');
       overlayCanvas.classList.toggle('mirror');
       drawCanvas.classList.toggle('mirror');
     });
 
-    // Запрашиваем доступ к камере через navigator.mediaDevices.getUserMedia
+    // Запрос доступа к камере
     async function initCamera(facingMode = "user") {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
-      }
+      if (stream) stream.getTracks().forEach(track => track.stop());
       try {
         stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: { exact: facingMode } },
@@ -209,7 +208,7 @@
       };
     }
 
-    // Подгон размеров canvas под размеры видео
+    // Подгон размеров canvas
     function resizeCanvases() {
       overlayCanvas.width = video.videoWidth || window.innerWidth;
       overlayCanvas.height = video.videoHeight || window.innerHeight;
@@ -220,7 +219,7 @@
 
     // Инициализация Mediapipe Hands
     const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
     hands.setOptions({
       maxNumHands: 1,
@@ -236,12 +235,11 @@
     });
     cameraUtils.start();
 
-    // Обработка результатов от Mediapipe Hands
+    // Обработка результатов рук
     function onHandsResults(results) {
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         latestHandLandmarks = results.multiHandLandmarks[0];
 
-        // Подсчёт сжатия кулака
         const now = Date.now();
         if (now - lastTimeFist > 700) {
           const fist = isFist(latestHandLandmarks);
@@ -254,18 +252,16 @@
             }
           }
         }
-        // Активация режима рисования: если дважды зафиксирован кулак и затем показан указательный палец
         if (!gestureActive && fistCount >= 2 && isIndexPointing(latestHandLandmarks)) {
           gestureActive = true;
           console.log("Режим рисования активирован");
           lastDrawPoint = null;
         }
-        // Рисование линии с плавным сглаживанием
         if (gestureActive) {
           const indexTip = latestHandLandmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
-          const alpha = 0.2; // коэффициент сглаживания (чем ниже, тем плавнее)
+          const alpha = 0.2; // коэффициент сглаживания
           if (!lastDrawPoint) {
             lastDrawPoint = { x, y };
           } else {
@@ -281,9 +277,8 @@
             lastDrawPoint = { x: smoothX, y: smoothY };
           }
         }
-        // Если выполнен жест OK – очищаем холст и сбрасываем режим рисования
         if (gestureActive && isOkGesture(latestHandLandmarks)) {
-          console.log("Жест OK обнаружен, очистка рисунка");
+          console.log("Жест OK, очистка рисунка");
           drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
           gestureActive = false;
           fistCount = 0;
@@ -313,7 +308,7 @@
       console.log("Модель COCO-SSD загружена");
     }
 
-    // Периодическая детекция лиц (каждые FACE_INTERVAL мс)
+    // Периодическая детекция лиц
     function startFaceDetectionLoop() {
       setInterval(async () => {
         if (faceModelsLoaded && video.readyState === 4) {
@@ -329,7 +324,7 @@
       }, FACE_INTERVAL);
     }
 
-    // Периодическая детекция объектов (каждые OBJECT_INTERVAL мс)
+    // Периодическая детекция объектов
     function startObjectDetectionLoop() {
       setInterval(async () => {
         if (cocoModel && video.readyState === 4) {
@@ -342,11 +337,22 @@
       }, OBJECT_INTERVAL);
     }
 
-    // Функция объединённой отрисовки оверлеев: рамки для руки, лиц и объектов
+    // Функция сглаживания для рамки (для руки)
+    function smoothBox(prev, next, alpha=0.2) {
+      if (!prev) return next;
+      return {
+        x: prev.x + alpha * (next.x - prev.x),
+        y: prev.y + alpha * (next.y - prev.y),
+        width: prev.width + alpha * (next.width - prev.width),
+        height: prev.height + alpha * (next.height - prev.height)
+      };
+    }
+
+    // Функция объединённой отрисовки оверлеев
     function drawOverlay() {
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
       
-      // Рисуем рамку для руки (если имеются данные) зеленым
+      // Рука: если имеются данные, вычисляем рамку по всем точкам и сглаживаем
       if (latestHandLandmarks) {
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
         latestHandLandmarks.forEach(pt => {
@@ -355,16 +361,19 @@
           if (pt.x > maxX) maxX = pt.x;
           if (pt.y > maxY) maxY = pt.y;
         });
-        const boxX = minX * overlayCanvas.width;
-        const boxY = minY * overlayCanvas.height;
-        const boxW = (maxX - minX) * overlayCanvas.width;
-        const boxH = (maxY - minY) * overlayCanvas.height;
+        const newBox = {
+          x: minX * overlayCanvas.width,
+          y: minY * overlayCanvas.height,
+          width: (maxX - minX) * overlayCanvas.width,
+          height: (maxY - minY) * overlayCanvas.height
+        };
+        lastHandBox = smoothBox(lastHandBox, newBox, 0.2);
         overlayCtx.strokeStyle = 'green';
         overlayCtx.lineWidth = 3;
-        overlayCtx.strokeRect(boxX, boxY, boxW, boxH);
+        overlayCtx.strokeRect(lastHandBox.x, lastHandBox.y, lastHandBox.width, lastHandBox.height);
       }
       
-      // Рисуем рамки для лиц (желтым)
+      // Лица: отрисовываем рамки (желтые) и надписи (на русском, не зеркалятся)
       latestFaceDetections.forEach(det => {
         const { x, y, width, height } = det.detection.box;
         overlayCtx.strokeStyle = 'yellow';
@@ -374,12 +383,13 @@
         const dominantExp = Object.keys(expressions).reduce((a, b) =>
           expressions[a] > expressions[b] ? a : b
         );
-        overlayCtx.fillStyle = 'yellow';
+        // Рисуем текст без зеркального эффекта
         overlayCtx.font = '16px sans-serif';
-        overlayCtx.fillText(`Возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
+        overlayCtx.fillStyle = 'yellow';
+        drawTextUnmirrored(overlayCtx, `возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
       });
       
-      // Рисуем рамки для объектов, используя bbox от COCO-SSD
+      // Объекты: рамки согласно типу (опасный – красный, еда – зелёный, остальные – желтые)
       latestObjectDetections.forEach(pred => {
         const [x, y, width, height] = pred.bbox;
         let color = 'yellow';
@@ -396,15 +406,15 @@
         overlayCtx.strokeStyle = color;
         overlayCtx.lineWidth = 2;
         overlayCtx.strokeRect(x, y, width, height);
-        overlayCtx.fillStyle = color;
         overlayCtx.font = '16px sans-serif';
-        overlayCtx.fillText(labelPrefix + pred.class, x, y > 20 ? y - 5 : y + 15);
+        overlayCtx.fillStyle = color;
+        drawTextUnmirrored(overlayCtx, labelPrefix + pred.class, x, y > 20 ? y - 5 : y + 15);
       });
       
       requestAnimationFrame(drawOverlay);
     }
 
-    // Инициализация всего приложения
+    // Инициализация приложения
     async function initApp() {
       await initCamera(currentFacingMode);
       await initFaceApi().catch(err => console.error("Ошибка загрузки face-api:", err));
