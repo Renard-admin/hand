@@ -27,7 +27,7 @@
       height: 100%;
       object-fit: cover;
     }
-    /* Зеркальный эффект */
+    /* Эффект зеркала */
     .mirror {
       transform: scaleX(-1);
     }
@@ -64,15 +64,15 @@
 </head>
 <body>
   <div id="container">
-    <!-- Видео с камеры -->
+    <!-- Видео-поток -->
     <video id="video" autoplay playsinline muted class="mirror"></video>
     <!-- Canvas для отрисовки рамок (рук, лиц, объектов) -->
     <canvas id="overlay" class="mirror"></canvas>
-    <!-- Canvas для рисования линий (режим рисования) -->
+    <!-- Canvas для рисования линии (режим рисования) -->
     <canvas id="drawLayer" class="mirror"></canvas>
     <div id="info">
-      Жесты: два раза сжать/разжать кулак + указательный = режим рисования<br>
-      Жест OK = очистка рисунка<br>
+      Жесты: два раза сжать/разжать кулак + указательный = режим рисования;<br>
+      Жест OK = очистка рисунка;<br>
       Лицо: возраст и эмоция; Объекты: опасные (красные), еда (зелёные), остальные (жёлтые)
     </div>
     <div id="controls">
@@ -110,12 +110,21 @@
     let currentFacingMode = "user"; // "user" или "environment"
     let stream = null;
 
-    // Переменные для жестов рук
+    // Глобальные переменные для распознавания жестов
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
     let lastTimeFist = 0;
-    let lastDrawPoint = null; // для рисования линии
+    let lastDrawPoint = null; // для непрерывного рисования
+
+    // Глобальные переменные для хранения результатов
+    let latestHandLandmarks = null;
+    let latestFaceDetections = [];
+    let latestObjectDetections = [];
+
+    // Для запуска face и объект-детекции не на каждом кадре
+    const FACE_INTERVAL = 700; // мс
+    const OBJECT_INTERVAL = 700; // мс
 
     // Функции для определения состояния пальцев (эвристика)
     function isFingerExtended(landmarks, pipIdx, tipIdx) {
@@ -197,7 +206,7 @@
       };
     }
 
-    // Подгон размеров canvas под видео
+    // Подгон размеров canvas под размеры видео
     function resizeCanvases() {
       overlayCanvas.width = video.videoWidth || window.innerWidth;
       overlayCanvas.height = video.videoHeight || window.innerHeight;
@@ -217,50 +226,22 @@
       minTrackingConfidence: 0.7
     });
     hands.onResults(onHandsResults);
-
-    const cameraUtils = new Camera(video, {
+    let cameraMediapipe = new Camera(video, {
       onFrame: async () => { await hands.send({ image: video }); },
       width: 640,
       height: 480
     });
-    cameraUtils.start();
+    cameraMediapipe.start();
 
     // Обработка результатов от Mediapipe Hands
     function onHandsResults(results) {
-      // Если размеры canvas не заданы, установить их
-      if (!overlayCanvas.width || !overlayCanvas.height) {
-        resizeCanvases();
-      }
-
-      // Отрисовка видео на overlay (для рамок и аннотаций)
-      overlayCtx.save();
-      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-      overlayCtx.drawImage(results.image, 0, 0, overlayCanvas.width, overlayCanvas.height);
-
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        const landmarks = results.multiHandLandmarks[0];
+        latestHandLandmarks = results.multiHandLandmarks[0];
 
-        // Вычисление ограничивающего прямоугольника руки
-        let minX = 1, minY = 1, maxX = 0, maxY = 0;
-        landmarks.forEach(pt => {
-          if (pt.x < minX) minX = pt.x;
-          if (pt.y < minY) minY = pt.y;
-          if (pt.x > maxX) maxX = pt.x;
-          if (pt.y > maxY) maxY = pt.y;
-        });
-        const boxX = minX * overlayCanvas.width;
-        const boxY = minY * overlayCanvas.height;
-        const boxW = (maxX - minX) * overlayCanvas.width;
-        const boxH = (maxY - minY) * overlayCanvas.height;
-        // Рисуем зелёную рамку
-        overlayCtx.strokeStyle = 'lime';
-        overlayCtx.lineWidth = 3;
-        overlayCtx.strokeRect(boxX, boxY, boxW, boxH);
-
-        // Логика распознавания жестов
+        // Логика жестов: подсчет кулаков
         const now = Date.now();
         if (now - lastTimeFist > 700) {
-          const fist = isFist(landmarks);
+          const fist = isFist(latestHandLandmarks);
           if (fist !== lastFistState) {
             lastFistState = fist;
             lastTimeFist = now;
@@ -270,15 +251,15 @@
             }
           }
         }
-        if (!gestureActive && fistCount >= 2 && isIndexPointing(landmarks)) {
+        // Активация режима рисования
+        if (!gestureActive && fistCount >= 2 && isIndexPointing(latestHandLandmarks)) {
           gestureActive = true;
           console.log("Режим рисования активирован");
-          // При входе в режим рисования сбрасываем последнюю точку
           lastDrawPoint = null;
         }
+        // Рисование линии по движению указательного пальца
         if (gestureActive) {
-          // Рисование линии по движению указательного пальца
-          const indexTip = landmarks[8];
+          const indexTip = latestHandLandmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
           if (!lastDrawPoint) {
@@ -294,15 +275,17 @@
             lastDrawPoint = { x, y };
           }
         }
-        if (gestureActive && isOkGesture(landmarks)) {
+        // Если выполнен жест OK – очистка рисунка и сброс режима
+        if (gestureActive && isOkGesture(latestHandLandmarks)) {
           console.log("Жест OK обнаружен, очистка рисунка");
           drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
           gestureActive = false;
           fistCount = 0;
           lastDrawPoint = null;
         }
+      } else {
+        latestHandLandmarks = null;
       }
-      overlayCtx.restore();
     }
 
     // --- Распознавание лиц с face-api.js ---
@@ -327,64 +310,104 @@
       console.log("Модель COCO-SSD загружена");
     }
 
-    // Обработка кадра для распознавания лиц и объектов
-    async function processFrame() {
-      if (video.readyState === 4) {
-        // Обновляем размеры canvas
-        resizeCanvases();
-
-        // Если загружены модели распознавания лиц
-        if (faceModelsLoaded) {
-          const detections = await faceapi.detectAllFaces(video, faceDetectionOptions)
-            .withAgeAndGender()
-            .withFaceExpressions();
-          detections.forEach(det => {
-            const { x, y, width, height } = det.detection.box;
-            overlayCtx.strokeStyle = 'yellow';
-            overlayCtx.lineWidth = 2;
-            overlayCtx.strokeRect(x, y, width, height);
-            const expressions = det.expressions;
-            const dominantExp = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
-            overlayCtx.fillStyle = 'yellow';
-            overlayCtx.font = '16px sans-serif';
-            overlayCtx.fillText(`Возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
-          });
+    // Запускаем периодическую детекцию лиц (каждые 700 мс)
+    function startFaceDetectionLoop() {
+      setInterval(async () => {
+        if (faceModelsLoaded && video.readyState === 4) {
+          try {
+            latestFaceDetections = await faceapi
+              .detectAllFaces(video, faceDetectionOptions)
+              .withAgeAndGender()
+              .withFaceExpressions();
+          } catch (e) {
+            console.error("Ошибка при распознавании лиц:", e);
+          }
         }
+      }, FACE_INTERVAL);
+    }
 
-        // Обнаружение объектов
-        if (cocoModel) {
-          const predictions = await cocoModel.detect(video);
-          predictions.forEach(pred => {
-            const [x, y, width, height] = pred.bbox;
-            let color = 'yellow';
-            let labelPrefix = "";
-            const dangerous = ['knife', 'pistol', 'scissors'];
-            const food = ['apple', 'banana', 'pizza', 'orange', 'sandwich'];
-            if (dangerous.includes(pred.class.toLowerCase())) {
-              color = 'red';
-              labelPrefix = "опасный: ";
-            } else if (food.includes(pred.class.toLowerCase())) {
-              color = 'green';
-              labelPrefix = "еда: ";
-            }
-            overlayCtx.strokeStyle = color;
-            overlayCtx.lineWidth = 2;
-            overlayCtx.strokeRect(x, y, width, height);
-            overlayCtx.fillStyle = color;
-            overlayCtx.font = '16px sans-serif';
-            overlayCtx.fillText(labelPrefix + pred.class, x, y > 20 ? y - 5 : y + 15);
-          });
+    // Запускаем периодическую детекцию объектов (каждые 700 мс)
+    function startObjectDetectionLoop() {
+      setInterval(async () => {
+        if (cocoModel && video.readyState === 4) {
+          try {
+            latestObjectDetections = await cocoModel.detect(video);
+          } catch (e) {
+            console.error("Ошибка при детекции объектов:", e);
+          }
         }
+      }, OBJECT_INTERVAL);
+    }
+
+    // Функция для объединённой отрисовки всех оверлеев
+    function drawOverlay() {
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      
+      // Если имеются данные по руке – рисуем рамку
+      if (latestHandLandmarks) {
+        let minX = 1, minY = 1, maxX = 0, maxY = 0;
+        latestHandLandmarks.forEach(pt => {
+          if (pt.x < minX) minX = pt.x;
+          if (pt.y < minY) minY = pt.y;
+          if (pt.x > maxX) maxX = pt.x;
+          if (pt.y > maxY) maxY = pt.y;
+        });
+        const boxX = minX * overlayCanvas.width;
+        const boxY = minY * overlayCanvas.height;
+        const boxW = (maxX - minX) * overlayCanvas.width;
+        const boxH = (maxY - minY) * overlayCanvas.height;
+        overlayCtx.strokeStyle = 'lime';
+        overlayCtx.lineWidth = 3;
+        overlayCtx.strokeRect(boxX, boxY, boxW, boxH);
       }
-      requestAnimationFrame(processFrame);
+      
+      // Отрисовка результатов распознавания лиц
+      latestFaceDetections.forEach(det => {
+        const { x, y, width, height } = det.detection.box;
+        overlayCtx.strokeStyle = 'yellow';
+        overlayCtx.lineWidth = 2;
+        overlayCtx.strokeRect(x, y, width, height);
+        const expressions = det.expressions;
+        const dominantExp = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
+        overlayCtx.fillStyle = 'yellow';
+        overlayCtx.font = '16px sans-serif';
+        overlayCtx.fillText(`Возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
+      });
+      
+      // Отрисовка результатов детекции объектов
+      latestObjectDetections.forEach(pred => {
+        const [x, y, width, height] = pred.bbox;
+        let color = 'yellow';
+        let labelPrefix = "";
+        const dangerous = ['knife', 'pistol', 'scissors'];
+        const food = ['apple', 'banana', 'pizza', 'orange', 'sandwich'];
+        if (dangerous.includes(pred.class.toLowerCase())) {
+          color = 'red';
+          labelPrefix = "опасный: ";
+        } else if (food.includes(pred.class.toLowerCase())) {
+          color = 'green';
+          labelPrefix = "еда: ";
+        }
+        overlayCtx.strokeStyle = color;
+        overlayCtx.lineWidth = 2;
+        overlayCtx.strokeRect(x, y, width, height);
+        overlayCtx.fillStyle = color;
+        overlayCtx.font = '16px sans-serif';
+        overlayCtx.fillText(labelPrefix + pred.class, x, y > 20 ? y - 5 : y + 15);
+      });
+      
+      requestAnimationFrame(drawOverlay);
     }
 
     // Инициализация всего приложения
     async function initApp() {
       await initCamera(currentFacingMode);
-      initFaceApi().catch(err => console.error("Ошибка загрузки face-api:", err));
-      initCoco().catch(err => console.error("Ошибка загрузки COCO-SSD:", err));
-      processFrame();
+      initMediapipeHands();
+      await initFaceApi().catch(err => console.error("Ошибка загрузки face-api моделей:", err));
+      await initCoco().catch(err => console.error("Ошибка загрузки модели COCO-SSD:", err));
+      startFaceDetectionLoop();
+      startObjectDetectionLoop();
+      drawOverlay();
     }
 
     window.addEventListener('load', initApp);
