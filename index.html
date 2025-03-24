@@ -39,17 +39,6 @@
       object-fit: cover;
       transform: scaleX(-1);
     }
-    /* Информационный блок */
-    #info {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      background: rgba(0,0,0,0.5);
-      padding: 5px 10px;
-      border-radius: 4px;
-      z-index: 30;
-      font-size: 14px;
-    }
     /* Панель управления */
     #controls {
       position: absolute;
@@ -59,13 +48,13 @@
     }
     #controls button {
       margin-right: 10px;
-      padding: 8px 12px;
+      padding: 4px 8px; /* уменьшено */
       background: rgba(0,0,0,0.7);
       border: none;
       border-radius: 4px;
       color: #fff;
       cursor: pointer;
-      font-size: 14px;
+      font-size: 12px; /* уменьшено */
     }
     #controls button:hover {
       background: rgba(0,0,0,0.9);
@@ -80,15 +69,9 @@
     <canvas id="overlay" class="mirror"></canvas>
     <!-- Canvas для рисования (режим рисования) -->
     <canvas id="drawLayer" class="mirror"></canvas>
-    <div id="info">
-      Жесты: дважды сжать/разжать кулак + указательный = режим рисования;<br>
-      Жест OK = очистка рисунка;<br>
-      Лица: рамка жёлтая (над ней – возраст и настроение);<br>
-      Рука и еда – зеленая; опасные объекты – красная; остальные – жёлтая.
-    </div>
     <div id="controls">
       <button id="fullscreenBtn">Полный экран</button>
-      <button id="switchCameraBtn">Сменить камеру</button>
+      <button id="switchCameraBtn">Передняя/Задняя</button>
       <button id="toggleMirrorBtn">Зеркало: Вкл/Выкл</button>
     </div>
   </div>
@@ -361,7 +344,7 @@
         overlayCtx.strokeRect(lastHandBox.x, lastHandBox.y, lastHandBox.width, lastHandBox.height);
       }
 
-      // Лица: рисуем желтые рамки и подписываем возраст и настроение (текст отрисовываем без зеркального эффекта)
+      // Лица: рисуем желтые рамки и подписываем возраст и настроение
       latestFaceDetections.forEach(det => {
         const { x, y, width, height } = det.detection.box;
         overlayCtx.strokeStyle = 'yellow';
@@ -376,39 +359,10 @@
         drawTextUnmirrored(overlayCtx, `возраст: ${Math.round(det.age)}, ${dominantExp}`, x, y - 10);
       });
 
-      // Объекты: отрисовываем рамки по bbox (плотно прилегающие к объекту)
+      // Объекты: отрисовываем рамки по bbox
       latestObjectDetections.forEach(pred => {
         const [x, y, width, height] = pred.bbox;
         let color = "yellow";
         let labelPrefix = "";
         const dangerous = ["knife", "pistol", "scissors"];
-        const food = ["apple", "banana", "pizza", "orange", "sandwich"];
-        if (dangerous.includes(pred.class.toLowerCase())) {
-          color = "red";
-          labelPrefix = "опасный: ";
-        } else if (food.includes(pred.class.toLowerCase())) {
-          color = "green";
-          labelPrefix = "еда: ";
-        }
-        overlayCtx.strokeStyle = color;
-        overlayCtx.lineWidth = 2;
-        overlayCtx.strokeRect(x, y, width, height);
-        overlayCtx.font = '16px sans-serif';
-        overlayCtx.fillStyle = color;
-        drawTextUnmirrored(overlayCtx, `${labelPrefix}${pred.class}`, x, y > 20 ? y - 5 : y + 15);
-      });
-      
-      requestAnimationFrame(drawOverlay);
-    }
-    drawOverlay();
-
-    // Инициализация всего приложения
-    async function initApp() {
-      await initCamera(currentFacingMode);
-      await initFaceApi().catch(err => console.error("Ошибка загрузки face-api:", err));
-      console.log("Приложение инициализировано");
-    }
-    window.addEventListener('load', initApp);
-  </script>
-</body>
-</html>
+        const
