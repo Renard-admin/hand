@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Улучшенное распознавание жестов, лиц и объектов</title>
+  <title>Расширенное распознавание: руки, лица, объекты и рисование</title>
   <style>
     * { box-sizing: border-box; }
     body, html {
@@ -19,7 +19,7 @@
       height: 100vh;
       background: #000;
     }
-    /* Видео получаем с зеркальным эффектом */
+    /* Видео выводится с зеркальным эффектом (по умолчанию) */
     video {
       position: absolute;
       top: 0;
@@ -29,7 +29,7 @@
       object-fit: cover;
       transform: scaleX(-1);
     }
-    /* Canvas для рамок и рисования наследует зеркальный эффект, чтобы совпадать с видео */
+    /* Canvas для оверлеев и рисования наследует зеркальный эффект */
     canvas.mirror {
       position: absolute;
       top: 0;
@@ -39,7 +39,7 @@
       object-fit: cover;
       transform: scaleX(-1);
     }
-    /* Текст для рамок будем рисовать на том же canvas, но с временным сбросом трансформации */
+    /* Информационный блок */
     #info {
       position: absolute;
       top: 10px;
@@ -50,6 +50,7 @@
       z-index: 30;
       font-size: 14px;
     }
+    /* Панель управления */
     #controls {
       position: absolute;
       bottom: 10px;
@@ -73,21 +74,21 @@
 </head>
 <body>
   <div id="container">
-    <!-- Видео с камеры (отображается зеркально) -->
+    <!-- Видео с камеры -->
     <video id="video" autoplay playsinline muted></video>
-    <!-- Canvas для отрисовки рамок (на него накладывается зеркальный эффект через класс) -->
+    <!-- Canvas для оверлеев (рамки для рук, лиц, объектов) -->
     <canvas id="overlay" class="mirror"></canvas>
-    <!-- Canvas для рисования (режим рисования); также зеркально -->
+    <!-- Canvas для рисования (режим рисования) -->
     <canvas id="drawLayer" class="mirror"></canvas>
     <div id="info">
-      Жесты: дважды сжать/разжать кулак + указательный = режим рисования<br>
-      Жест OK = очистка рисунка<br>
-      Лицо: (желтая рамка, над ней – возраст и настроение)<br>
-      Рука и еда – зеленая, опасные объекты – красная, остальные – желтая
+      Жесты: дважды сжать/разжать кулак + указательный = режим рисования;<br>
+      Жест OK = очистка рисунка;<br>
+      Лица: рамка жёлтая (над ней – возраст и настроение);<br>
+      Рука и еда – зеленая; опасные объекты – красная; остальные – жёлтая.
     </div>
     <div id="controls">
       <button id="fullscreenBtn">Полный экран</button>
-      <button id="switchCameraBtn">Переключить камеру</button>
+      <button id="switchCameraBtn">Сменить камеру</button>
       <button id="toggleMirrorBtn">Зеркало: Вкл/Выкл</button>
     </div>
   </div>
@@ -104,7 +105,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
   <script>
-    // Элементы интерфейса
+    // Элементы страницы
     const video = document.getElementById('video');
     const overlayCanvas = document.getElementById('overlay');
     const overlayCtx = overlayCanvas.getContext('2d');
@@ -116,15 +117,15 @@
     const container = document.getElementById('container');
 
     // Глобальные переменные камеры
-    let currentFacingMode = "user";
+    let currentFacingMode = "user"; // "user" или "environment"
     let stream = null;
 
-    // Переменные для распознавания рук и жестов
+    // Переменные для распознавания рук и рисования
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
     let lastTimeFist = 0;
-    let lastDrawPoint = null;
+    let lastDrawPoint = null; // для линии рисования
     let latestHandLandmarks = null;
     let lastHandBox = null; // для сглаживания рамки руки
 
@@ -135,14 +136,24 @@
     let cocoModel = null;
     let latestObjectDetections = [];
 
-    // Интервалы для детекции (мс)
+    // Интервалы для периодической детекции (в мс)
     const FACE_INTERVAL = 700;
     const OBJECT_INTERVAL = 700;
 
-    // Функции определения положения пальцев
+    // Функция для рисования текста без зеркального эффекта (т.к. canvas зеркальный)
+    function drawTextUnmirrored(ctx, text, x, y) {
+      ctx.save();
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.fillText(text, overlayCanvas.width - x, y);
+      ctx.restore();
+    }
+
+    // Функции определения состояния пальцев
     function isFingerExtended(landmarks, pipIdx, tipIdx) {
       const pip = landmarks[pipIdx], tip = landmarks[tipIdx], wrist = landmarks[0];
-      return Math.hypot(tip.x - wrist.x, tip.y - wrist.y) > 1.3 * Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
+      const distTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+      const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
+      return distTip > distPip * 1.3;
     }
     function isFist(landmarks) {
       const fingers = [{pip:6, tip:8}, {pip:10, tip:12}, {pip:14, tip:16}, {pip:18, tip:20}];
@@ -155,17 +166,9 @@
       return indexExtended && others.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
     }
     function isOkGesture(landmarks) {
-      const dx = landmarks[4].x - landmarks[8].x, dy = landmarks[4].y - landmarks[8].y;
+      const dx = landmarks[4].x - landmarks[8].x;
+      const dy = landmarks[4].y - landmarks[8].y;
       return Math.hypot(dx, dy) < 0.05;
-    }
-
-    // Функция для рисования текста без зеркального эффекта
-    function drawTextUnmirrored(ctx, text, x, y) {
-      ctx.save();
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      // Отзеркаливаем x: т.к. overlay имеет размер overlayCanvas.width
-      ctx.fillText(text, overlayCanvas.width - x, y);
-      ctx.restore();
     }
 
     // Кнопки управления
@@ -181,13 +184,12 @@
       initCamera(currentFacingMode);
     });
     toggleMirrorBtn.addEventListener('click', () => {
-      // Меняем класс mirror у видео и обоих canvas
       video.classList.toggle('mirror');
       overlayCanvas.classList.toggle('mirror');
       drawCanvas.classList.toggle('mirror');
     });
 
-    // Запрос доступа к камере
+    // Запрос доступа к камере через navigator.mediaDevices.getUserMedia
     async function initCamera(facingMode = "user") {
       if (stream) stream.getTracks().forEach(track => track.stop());
       try {
@@ -208,7 +210,7 @@
       };
     }
 
-    // Подгон размеров canvas
+    // Изменение размеров canvas в зависимости от видео
     function resizeCanvases() {
       overlayCanvas.width = video.videoWidth || window.innerWidth;
       overlayCanvas.height = video.videoHeight || window.innerHeight;
@@ -289,7 +291,7 @@
       }
     }
 
-    // --- Инициализация face-api.js ---
+    // --- Распознавание лиц с помощью face-api.js ---
     async function initFaceApi() {
       const MODEL_URL = '/models';
       await Promise.all([
@@ -299,45 +301,31 @@
       ]);
       faceDetectionOptions = new faceapi.TinyFaceDetectorOptions({ inputSize: 224, scoreThreshold: 0.5 });
       faceModelsLoaded = true;
-      console.log("Модели face-api загружены");
+      console.log("Face-api модели загружены");
     }
+    async function detectFaces() {
+      if (video.readyState < 2) return;
+      const detections = await faceapi.detectAllFaces(video, faceDetectionOptions)
+                                    .withAgeAndGender()
+                                    .withFaceExpressions();
+      latestFaceDetections = detections;
+    }
+    setInterval(detectFaces, 1000);
 
-    // --- Инициализация COCO-SSD ---
+    // --- Распознавание объектов с помощью COCO-SSD ---
     async function initCoco() {
       cocoModel = await cocoSsd.load();
-      console.log("Модель COCO-SSD загружена");
+      console.log("COCO-SSD модель загружена");
     }
-
-    // Периодическая детекция лиц
-    function startFaceDetectionLoop() {
-      setInterval(async () => {
-        if (faceModelsLoaded && video.readyState === 4) {
-          try {
-            latestFaceDetections = await faceapi
-              .detectAllFaces(video, faceDetectionOptions)
-              .withAgeAndGender()
-              .withFaceExpressions();
-          } catch (e) {
-            console.error("Ошибка распознавания лиц:", e);
-          }
-        }
-      }, FACE_INTERVAL);
+    async function detectObjects() {
+      if (!cocoModel || video.readyState < 2) return;
+      const predictions = await cocoModel.detect(video);
+      latestObjectDetections = predictions;
     }
+    setInterval(detectObjects, 1000);
+    initCoco();
 
-    // Периодическая детекция объектов
-    function startObjectDetectionLoop() {
-      setInterval(async () => {
-        if (cocoModel && video.readyState === 4) {
-          try {
-            latestObjectDetections = await cocoModel.detect(video);
-          } catch (e) {
-            console.error("Ошибка детекции объектов:", e);
-          }
-        }
-      }, OBJECT_INTERVAL);
-    }
-
-    // Функция сглаживания для рамки (для руки)
+    // Функция сглаживания (для рамок руки)
     function smoothBox(prev, next, alpha=0.2) {
       if (!prev) return next;
       return {
@@ -348,10 +336,10 @@
       };
     }
 
-    // Функция объединённой отрисовки оверлеев
+    // Функция отрисовки оверлеев: рамки для руки, лиц и объектов
     function drawOverlay() {
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-      
+
       // Рука: если имеются данные, вычисляем рамку по всем точкам и сглаживаем
       if (latestHandLandmarks) {
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
@@ -372,8 +360,8 @@
         overlayCtx.lineWidth = 3;
         overlayCtx.strokeRect(lastHandBox.x, lastHandBox.y, lastHandBox.width, lastHandBox.height);
       }
-      
-      // Лица: отрисовываем рамки (желтые) и надписи (на русском, не зеркалятся)
+
+      // Лица: рисуем желтые рамки и подписываем возраст и настроение (текст отрисовываем без зеркального эффекта)
       latestFaceDetections.forEach(det => {
         const { x, y, width, height } = det.detection.box;
         overlayCtx.strokeStyle = 'yellow';
@@ -383,24 +371,23 @@
         const dominantExp = Object.keys(expressions).reduce((a, b) =>
           expressions[a] > expressions[b] ? a : b
         );
-        // Рисуем текст без зеркального эффекта
         overlayCtx.font = '16px sans-serif';
         overlayCtx.fillStyle = 'yellow';
-        drawTextUnmirrored(overlayCtx, `возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
+        drawTextUnmirrored(overlayCtx, `возраст: ${Math.round(det.age)}, ${dominantExp}`, x, y - 10);
       });
-      
-      // Объекты: рамки согласно типу (опасный – красный, еда – зелёный, остальные – желтые)
+
+      // Объекты: отрисовываем рамки по bbox (плотно прилегающие к объекту)
       latestObjectDetections.forEach(pred => {
         const [x, y, width, height] = pred.bbox;
-        let color = 'yellow';
+        let color = "yellow";
         let labelPrefix = "";
-        const dangerous = ['knife', 'pistol', 'scissors'];
-        const food = ['apple', 'banana', 'pizza', 'orange', 'sandwich'];
+        const dangerous = ["knife", "pistol", "scissors"];
+        const food = ["apple", "banana", "pizza", "orange", "sandwich"];
         if (dangerous.includes(pred.class.toLowerCase())) {
-          color = 'red';
+          color = "red";
           labelPrefix = "опасный: ";
         } else if (food.includes(pred.class.toLowerCase())) {
-          color = 'green';
+          color = "green";
           labelPrefix = "еда: ";
         }
         overlayCtx.strokeStyle = color;
@@ -408,23 +395,19 @@
         overlayCtx.strokeRect(x, y, width, height);
         overlayCtx.font = '16px sans-serif';
         overlayCtx.fillStyle = color;
-        drawTextUnmirrored(overlayCtx, labelPrefix + pred.class, x, y > 20 ? y - 5 : y + 15);
+        drawTextUnmirrored(overlayCtx, `${labelPrefix}${pred.class}`, x, y > 20 ? y - 5 : y + 15);
       });
       
       requestAnimationFrame(drawOverlay);
     }
+    drawOverlay();
 
-    // Инициализация приложения
+    // Инициализация всего приложения
     async function initApp() {
       await initCamera(currentFacingMode);
       await initFaceApi().catch(err => console.error("Ошибка загрузки face-api:", err));
-      await initCoco().catch(err => console.error("Ошибка загрузки COCO-SSD:", err));
-      startFaceDetectionLoop();
-      startObjectDetectionLoop();
-      drawOverlay();
       console.log("Приложение инициализировано");
     }
-
     window.addEventListener('load', initApp);
   </script>
 </body>
