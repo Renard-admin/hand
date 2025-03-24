@@ -1,105 +1,85 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <title>Улучшенное распознавание жестов, лиц и объектов</title>
+  <meta charset="UTF-8">
+  <title>Расширенное распознавание: руки, лица, объекты</title>
   <style>
     * { margin: 0; padding: 0; }
-    body, html {
-      width: 100%;
-      height: 100%;
-      background: #333;
-      color: #fff;
-      font-family: sans-serif;
-      overflow: hidden;
-    }
+    body, html { overflow: hidden; background: #333; color: #fff; font-family: sans-serif; }
     #container {
       position: relative;
       width: 100vw;
       height: 100vh;
       background: #000;
     }
-    video {
+    video, canvas {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
       object-fit: cover;
-      /* Можно убрать зеркальное отображение, если нужно */
+      /* Зеркальный эффект можно отключить, если убрать scaleX(-1) */
       transform: scaleX(-1);
     }
-    canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      pointer-events: none;
-    }
-    /* Определяем порядок: video < output < drawLayer < overlay */
-    #output { z-index: 1; }
-    #drawLayer { z-index: 2; }
-    #overlay { z-index: 3; }
+    /* Контрольная панель */
     #info {
       position: absolute;
       top: 10px;
       left: 10px;
-      background: rgba(0, 0, 0, 0.5);
+      background: rgba(0,0,0,0.5);
       padding: 5px 10px;
       border-radius: 4px;
-      z-index: 10;
-      font-size: 14px;
+      z-index: 30;
     }
-    .btn {
+    button {
       position: absolute;
       top: 10px;
-      z-index: 20;
       padding: 10px 20px;
-      background: rgba(0, 0, 0, 0.7);
+      background: rgba(0,0,0,0.7);
       color: #fff;
       border: none;
       border-radius: 4px;
       cursor: pointer;
       font-size: 16px;
+      z-index: 30;
     }
     #fullscreenBtn { right: 10px; }
     #switchCameraBtn { right: 150px; }
-    .btn:hover { background: rgba(0, 0, 0, 0.9); }
+    button:hover {
+      background: rgba(0,0,0,0.9);
+    }
   </style>
 </head>
 <body>
   <div id="container">
-    <!-- Видео с камеры -->
+    <!-- Видеопоток -->
     <video id="video" autoplay playsinline muted></video>
-    <!-- Canvas для отрисовки результатов Mediapipe (рука) -->
+    <!-- Canvas для отрисовки видео и результатов распознавания рук -->
     <canvas id="output"></canvas>
-    <!-- Canvas для рисования линий (режим рисования, не очищается при обновлении) -->
+    <!-- Canvas для рисования линий (режим рисования) -->
     <canvas id="drawLayer"></canvas>
-    <!-- Canvas для отрисовки рамок лиц и объектов -->
+    <!-- Дополнительный canvas для оверлеев: лица и объекты -->
     <canvas id="overlay"></canvas>
+    <!-- Информационный блок -->
     <div id="info">
-      Жесты: дважды сжать кулак + указательный = режим рисования; OK = очистка<br>
-      Лицо: возраст и эмоция; Объекты: опасный (красный), еда (зелёный), остальные (жёлтый)
+      Жесты: два раза сжать/разжать кулак + указательный = начать рисование; жест OK = очистить<br>
+      Полный экран и смена камеры доступны через кнопки.
     </div>
-    <button id="fullscreenBtn" class="btn">Полный экран</button>
-    <button id="switchCameraBtn" class="btn">Сменить камеру</button>
+    <button id="fullscreenBtn">Полный экран</button>
+    <button id="switchCameraBtn">Сменить камеру</button>
   </div>
 
-  <!-- Подключаем библиотеки -->
-  <!-- Mediapipe Hands и утилиты -->
+  <!-- Подключение библиотек -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-  <!-- Face-api.js -->
   <script src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
-  <!-- TensorFlow.js и COCO-SSD -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
   <script>
-    // Элементы страницы
+    // Элементы страницы и контексты отрисовки
     const videoElement = document.getElementById('video');
     const outputCanvas = document.getElementById('output');
     const drawCanvas = document.getElementById('drawLayer');
@@ -107,48 +87,50 @@
     const infoDiv = document.getElementById('info');
     const fullscreenBtn = document.getElementById('fullscreenBtn');
     const switchCameraBtn = document.getElementById('switchCameraBtn');
+
     const outputCtx = outputCanvas.getContext('2d');
     const drawCtx = drawCanvas.getContext('2d');
     const overlayCtx = overlayCanvas.getContext('2d');
 
-    // Глобальные переменные
-    let currentFacingMode = 'user'; // начально передняя камера
-    let stream = null;
-    let handsGestureActive = false;
-    let fistCount = 0;
-    let lastFistState = false;
-    let lastTimeFist = 0;
-    let drawingActive = false;
-    let faceDetections = [];
-    let objectDetections = [];
-    let cocoModel = null;
+    // Переменные для работы с камерой
+    let currentStream = null;
+    let facingMode = "user"; // "user" или "environment"
 
-    // Функция для установки размеров canvas
+    // Функция установки размеров всех canvas
     function resizeCanvases() {
       const width = videoElement.videoWidth || window.innerWidth;
       const height = videoElement.videoHeight || window.innerHeight;
-      [outputCanvas, drawCanvas, overlayCanvas].forEach(canvas => {
-        canvas.width = width;
-        canvas.height = height;
-      });
+      outputCanvas.width = width;
+      outputCanvas.height = height;
+      drawCanvas.width = width;
+      drawCanvas.height = height;
+      overlayCanvas.width = width;
+      overlayCanvas.height = height;
     }
 
-    // Запрос доступа к камере с заданным facingMode
+    // Функция запуска видеопотока с нужными настройками
     async function startCamera() {
-      if (stream) {
-        stream.getTracks().forEach(track => track.stop());
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
       }
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: currentFacingMode }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: facingMode },
+          audio: false
         });
+        currentStream = stream;
         videoElement.srcObject = stream;
+        videoElement.onloadedmetadata = () => {
+          resizeCanvases();
+          // Запускаем цикл обработки видео для распознавания рук
+          processVideo();
+        };
       } catch (err) {
         console.error("Ошибка доступа к камере:", err);
       }
     }
 
-    // Обработчик кнопки полноэкранного режима
+    // Обработчики кнопок
     fullscreenBtn.addEventListener('click', () => {
       if (document.fullscreenElement) {
         document.exitFullscreen();
@@ -157,15 +139,69 @@
       }
     });
 
-    // Обработчик переключения камеры
     switchCameraBtn.addEventListener('click', () => {
-      currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+      // Переключаем режим: если сейчас user, то environment и наоборот
+      facingMode = (facingMode === "user") ? "environment" : "user";
       startCamera();
     });
 
-    // --- Mediapipe Hands ---
+    // --- Mediapipe Hands и логика жестов ---
+    // Параметры для распознавания жестов
+    let fistCount = 0;
+    let gestureActive = false;
+    let lastFistState = false;
+    let lastTimeFist = 0;
+
+    // Простая эвристика для определения вытянутого пальца
+    function isFingerExtended(landmarks, pipIdx, tipIdx) {
+      const pip = landmarks[pipIdx];
+      const tip = landmarks[tipIdx];
+      const wrist = landmarks[0];
+      const distTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
+      const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
+      return distTip > distPip * 1.3;
+    }
+
+    // Определение жеста "кулак" – все пальцы (кроме, возможно, большого) не вытянуты
+    function isFist(landmarks) {
+      const fingers = [
+        { pip: 6, tip: 8 },   // указательный
+        { pip: 10, tip: 12 }, // средний
+        { pip: 14, tip: 16 }, // безымянный
+        { pip: 18, tip: 20 }  // мизинец
+      ];
+      let thumbExtended = isFingerExtended(landmarks, 2, 4);
+      let otherFingersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
+      return (!thumbExtended) && otherFingersFolded;
+    }
+
+    // Жест "указательный" – указательный палец вытянут, остальные нет
+    function isIndexPointing(landmarks) {
+      const indexExtended = isFingerExtended(landmarks, 6, 8);
+      const otherFingers = [
+        { pip: 10, tip: 12 },
+        { pip: 14, tip: 16 },
+        { pip: 18, tip: 20 }
+      ];
+      let othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
+      return indexExtended && othersFolded;
+    }
+
+    // Жест "OK" – расстояние между большим и указательным пальцами маленькое
+    function isOkGesture(landmarks) {
+      const thumbTip = landmarks[4];
+      const indexTip = landmarks[8];
+      const dx = thumbTip.x - indexTip.x;
+      const dy = thumbTip.y - indexTip.y;
+      const dist = Math.hypot(dx, dy);
+      return dist < 0.05;
+    }
+
+    // Инициализация Mediapipe Hands
     const hands = new Hands({
-      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+      locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+      }
     });
     hands.setOptions({
       maxNumHands: 1,
@@ -173,20 +209,20 @@
       minDetectionConfidence: 0.7,
       minTrackingConfidence: 0.7
     });
-
-    hands.onResults(results => {
+    hands.onResults((results) => {
       if (!outputCanvas.width || !outputCanvas.height) {
         resizeCanvases();
       }
-      // Отрисовка видео на outputCanvas
+      // Отрисовка видео (уже обработанного Mediapipe)
       outputCtx.save();
       outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
       outputCtx.drawImage(results.image, 0, 0, outputCanvas.width, outputCanvas.height);
 
+      // Если обнаружена рука, рисуем рамку и анализируем жесты
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
 
-        // Вычисляем ограничивающий прямоугольник для руки
+        // Вычисляем ограничивающий прямоугольник руки
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
         landmarks.forEach(pt => {
           if (pt.x < minX) minX = pt.x;
@@ -203,9 +239,9 @@
         outputCtx.lineWidth = 3;
         outputCtx.strokeRect(boxX, boxY, boxW, boxH);
 
-        // --- Логика распознавания жестов ---
+        // Логика распознавания жестов
         const now = Date.now();
-        if (now - lastTimeFist > 700) {
+        if (now - lastTimeFist > 700) {  // дебаунс
           const fist = isFist(landmarks);
           if (fist !== lastFistState) {
             lastFistState = fist;
@@ -216,175 +252,113 @@
             }
           }
         }
-        // Если два раза сжат кулак и затем указательный палец вытянут – активировать режим рисования
-        if (!drawingActive && fistCount >= 2 && isIndexPointing(landmarks)) {
-          drawingActive = true;
+        if (!gestureActive && fistCount >= 2 && isIndexPointing(landmarks)) {
+          gestureActive = true;
           console.log("Режим рисования активирован");
         }
-        // В режиме рисования – рисуем линию по движению указательного пальца
-        if (drawingActive) {
+        if (gestureActive) {
           const indexTip = landmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
+          // Рисуем черную точку (линия формируется при движении)
           drawCtx.fillStyle = 'black';
           drawCtx.beginPath();
           drawCtx.arc(x, y, 4, 0, 2 * Math.PI);
           drawCtx.fill();
         }
-        // Если жест OK (указательный и большой пальцы рядом) – очистить рисунок и сбросить режим
-        if (drawingActive && isOkGesture(landmarks)) {
-          console.log("Жест OK обнаружен, очистка холста");
+        if (gestureActive && isOkGesture(landmarks)) {
+          console.log("Жест OK обнаружен, очистка рисунка");
           drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-          drawingActive = false;
+          gestureActive = false;
           fistCount = 0;
         }
       }
       outputCtx.restore();
     });
 
-    // Простая эвристика: проверка вытянут ли палец
-    function isFingerExtended(landmarks, pipIdx, tipIdx) {
-      const pip = landmarks[pipIdx];
-      const tip = landmarks[tipIdx];
-      const wrist = landmarks[0];
-      const distTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
-      const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
-      return distTip > distPip * 1.3;
-    }
-
-    function isFist(landmarks) {
-      const fingers = [
-        { pip: 6, tip: 8 },
-        { pip: 10, tip: 12 },
-        { pip: 14, tip: 16 },
-        { pip: 18, tip: 20 }
-      ];
-      let thumbExtended = isFingerExtended(landmarks, 2, 4);
-      let otherFingersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return (!thumbExtended) && otherFingersFolded;
-    }
-
-    function isIndexPointing(landmarks) {
-      const indexExtended = isFingerExtended(landmarks, 6, 8);
-      const otherFingers = [
-        { pip: 10, tip: 12 },
-        { pip: 14, tip: 16 },
-        { pip: 18, tip: 20 }
-      ];
-      let othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return indexExtended && othersFolded;
-    }
-
-    function isOkGesture(landmarks) {
-      const thumbTip = landmarks[4];
-      const indexTip = landmarks[8];
-      const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
-      return dist < 0.05;
-    }
-
-    // Инициализация камеры для Mediapipe
-    const camera = new Camera(videoElement, {
-      onFrame: async () => {
+    // Запускаем цикл для отправки кадров из video в Mediapipe Hands
+    async function processVideo() {
+      if (videoElement.readyState >= 2) {
         await hands.send({ image: videoElement });
-      },
-      width: 640,
-      height: 480
+      }
+      requestAnimationFrame(processVideo);
+    }
+
+    // --- Распознавание лиц с помощью face‑api.js ---
+    // Загрузка моделей. Для демонстрации модели ожидаются в папке "/models"
+    Promise.all([
+      faceapi.nets.tinyFaceDetector.loadFromUri('/models'),
+      faceapi.nets.ageGenderNet.loadFromUri('/models'),
+      faceapi.nets.faceExpressionNet.loadFromUri('/models')
+    ]).then(() => {
+      console.log("Face‑api модели загружены");
     });
 
-    // --- Face-api.js ---
-    async function loadFaceModels() {
-      // Модели должны находиться в папке "models" (настроить путь при необходимости)
-      await faceapi.nets.tinyFaceDetector.loadFromUri('models');
-      await faceapi.nets.ageGenderNet.loadFromUri('models');
-      await faceapi.nets.faceExpressionNet.loadFromUri('models');
-      console.log("Модели face‑api загружены");
-    }
-
     async function detectFaces() {
-      if (videoElement.readyState >= 2) {
-        const detections = await faceapi.detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions())
-          .withFaceExpressions()
-          .withAgeAndGender();
-        faceDetections = detections;
-      }
-    }
-
-    // --- COCO-SSD (обнаружение объектов) ---
-    async function loadCocoModel() {
-      cocoModel = await cocoSsd.load();
-      console.log("Модель COCO‑SSD загружена");
-    }
-
-    async function detectObjects() {
-      if (videoElement.readyState >= 2 && cocoModel) {
-        const predictions = await cocoModel.detect(videoElement);
-        objectDetections = predictions;
-      }
-    }
-
-    // Отрисовка рамок для лиц и объектов на overlayCanvas
-    function drawOverlays() {
+      if (videoElement.readyState < 2) return;
+      const detections = await faceapi.detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions())
+                                      .withAgeAndGender()
+                                      .withFaceExpressions();
+      // Очищаем оверлей перед новой отрисовкой
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-      
-      // Рисуем рамки для лиц (жёлтым)
-      faceDetections.forEach(det => {
-        const { x, y, width, height } = det.detection.box;
-        overlayCtx.strokeStyle = 'yellow';
+      detections.forEach(d => {
+        const { x, y, width, height } = d.detection.box;
+        overlayCtx.strokeStyle = "yellow";
         overlayCtx.lineWidth = 2;
         overlayCtx.strokeRect(x, y, width, height);
-        const age = Math.round(det.age);
         // Определяем доминирующую эмоцию
-        const expressions = det.expressions;
-        const dominantExp = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
-        overlayCtx.fillStyle = 'yellow';
-        overlayCtx.font = '16px sans-serif';
-        overlayCtx.fillText(`Возраст: ${age}, ${dominantExp}`, x, y - 5);
+        const expressions = d.expressions;
+        const dominantEmotion = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
+        const age = Math.round(d.age);
+        overlayCtx.fillStyle = "yellow";
+        overlayCtx.font = "16px sans-serif";
+        overlayCtx.fillText(`Возраст: ${age}, ${dominantEmotion}`, x, y - 10);
       });
-      
-      // Рисуем рамки для объектов
-      const dangerous = ['knife', 'scissors', 'gun'];
-      const food = ['apple', 'banana', 'pizza', 'orange', 'broccoli', 'carrot'];
-      objectDetections.forEach(obj => {
-        const { bbox, class: className, score } = obj;
-        let color = 'yellow';
-        let label = className;
-        if (dangerous.includes(className.toLowerCase())) {
-          color = 'red';
-          label = `опасный: ${className}`;
-        } else if (food.includes(className.toLowerCase())) {
-          color = 'green';
-          label = `еда: ${className}`;
+    }
+    // Обновляем распознавание лиц раз в 1 секунду
+    setInterval(detectFaces, 1000);
+
+    // --- Распознавание объектов с помощью COCO-SSD (TensorFlow.js) ---
+    let objectModel;
+    async function loadObjectModel() {
+      objectModel = await cocoSsd.load();
+      console.log("Модель объектов загружена");
+    }
+    async function detectObjects() {
+      if (!objectModel || videoElement.readyState < 2) return;
+      const predictions = await objectModel.detect(videoElement);
+      predictions.forEach(p => {
+        const [x, y, w, h] = p.bbox;
+        let color = "yellow";
+        let labelPrefix = "";
+        // Определяем опасные объекты
+        const dangerous = ["knife", "pistol", "scissors"];
+        // Пример списка еды
+        const food = ["apple", "banana", "pizza", "orange", "sandwich"];
+        if (dangerous.includes(p.class.toLowerCase())) {
+          color = "red";
+          labelPrefix = "опасный: ";
+        } else if (food.includes(p.class.toLowerCase())) {
+          color = "green";
+          labelPrefix = "еда: ";
         }
         overlayCtx.strokeStyle = color;
         overlayCtx.lineWidth = 2;
-        overlayCtx.strokeRect(bbox[0], bbox[1], bbox[2], bbox[3]);
+        overlayCtx.strokeRect(x, y, w, h);
         overlayCtx.fillStyle = color;
-        overlayCtx.font = '16px sans-serif';
-        overlayCtx.fillText(label, bbox[0], bbox[1] - 5);
+        overlayCtx.font = "16px sans-serif";
+        overlayCtx.fillText(`${labelPrefix}${p.class}`, x, y > 20 ? y - 5 : y + 15);
       });
     }
+    // Обновляем распознавание объектов раз в 1 секунду
+    setInterval(detectObjects, 1000);
+    loadObjectModel();
 
-    // Главный цикл для отрисовки overlay и периодического запуска детекции лиц/объектов
-    function animate() {
-      drawOverlays();
-      requestAnimationFrame(animate);
-    }
+    // --- Инициализация ---
+    // Запуск камеры при загрузке страницы
+    startCamera();
 
-    // Периодически обновляем данные о лицах и объектах (например, каждые 500мс)
-    setInterval(detectFaces, 500);
-    setInterval(detectObjects, 500);
-
-    // Инициализация всех модулей
-    async function init() {
-      await startCamera();
-      await loadFaceModels();
-      await loadCocoModel();
-      camera.start();
-      animate();
-    }
-    init();
-
-    // Обновление размеров при изменении окна
+    // При изменении размера окна обновляем размеры canvas
     window.addEventListener('resize', resizeCanvases);
   </script>
 </body>
