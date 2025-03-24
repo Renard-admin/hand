@@ -259,22 +259,27 @@
           console.log("Режим рисования активирован");
           lastDrawPoint = null;
         }
-        // Если режим рисования активен – рисуем линию по движению указательного пальца
+        // Если режим рисования активен – рисуем линию с плавным сглаживанием
         if (gestureActive) {
           const indexTip = latestHandLandmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
+          // Коэффициент сглаживания (чем ниже alpha, тем плавнее движение)
+          const alpha = 0.2;
           if (!lastDrawPoint) {
             lastDrawPoint = { x, y };
           } else {
+            // Применяем экспоненциальное сглаживание
+            const smoothX = lastDrawPoint.x + alpha * (x - lastDrawPoint.x);
+            const smoothY = lastDrawPoint.y + alpha * (y - lastDrawPoint.y);
             drawCtx.strokeStyle = 'black';
             drawCtx.lineWidth = 4;
             drawCtx.lineCap = 'round';
             drawCtx.beginPath();
             drawCtx.moveTo(lastDrawPoint.x, lastDrawPoint.y);
-            drawCtx.lineTo(x, y);
+            drawCtx.lineTo(smoothX, smoothY);
             drawCtx.stroke();
-            lastDrawPoint = { x, y };
+            lastDrawPoint = { x: smoothX, y: smoothY };
           }
         }
         // Если выполнен жест OK – очищаем холст и сбрасываем режим рисования
@@ -375,7 +380,7 @@
         overlayCtx.fillText(`Возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
       });
       
-      // Рисуем рамки для объектов — используем bbox от COCO-SSD, чтобы рамка была максимально близко к объекту
+      // Рисуем рамки для объектов (с использованием bbox от COCO-SSD)
       latestObjectDetections.forEach(pred => {
         const [x, y, width, height] = pred.bbox;
         let color = 'yellow';
