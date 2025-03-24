@@ -73,7 +73,8 @@
     <div id="info">
       Жесты: дважды сжать/разжать кулак + указательный = режим рисования;<br>
       Жест OK = очистка рисунка;<br>
-      Лицо: возраст и эмоция; Объекты: опасные (красные), еда (зелёные), остальные (жёлтые)
+      Лицо: возраст и эмоция; Объекты: опасные (красные), еда (зелёные), остальные (жёлтые)<br>
+      (Рука выделяется зелёной рамкой)
     </div>
     <div id="controls">
       <button id="fullscreenBtn">Полный экран</button>
@@ -109,7 +110,7 @@
     let currentFacingMode = "user"; // "user" или "environment"
     let stream = null;
 
-    // Переменные для распознавания рук и жестов
+    // Глобальные переменные для распознавания рук и жестов
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
@@ -240,7 +241,7 @@
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         latestHandLandmarks = results.multiHandLandmarks[0];
 
-        // Обработка жестов: подсчёт сжатия кулака
+        // Подсчёт сжатия кулака
         const now = Date.now();
         if (now - lastTimeFist > 700) {
           const fist = isFist(latestHandLandmarks);
@@ -259,17 +260,15 @@
           console.log("Режим рисования активирован");
           lastDrawPoint = null;
         }
-        // Если режим рисования активен – рисуем линию с плавным сглаживанием
+        // Рисование линии с плавным сглаживанием
         if (gestureActive) {
           const indexTip = latestHandLandmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
-          // Коэффициент сглаживания (чем ниже alpha, тем плавнее движение)
-          const alpha = 0.2;
+          const alpha = 0.2; // коэффициент сглаживания (чем ниже, тем плавнее)
           if (!lastDrawPoint) {
             lastDrawPoint = { x, y };
           } else {
-            // Применяем экспоненциальное сглаживание
             const smoothX = lastDrawPoint.x + alpha * (x - lastDrawPoint.x);
             const smoothY = lastDrawPoint.y + alpha * (y - lastDrawPoint.y);
             drawCtx.strokeStyle = 'black';
@@ -347,7 +346,7 @@
     function drawOverlay() {
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
       
-      // Рисуем рамку для обнаруженной руки (если данные имеются)
+      // Рисуем рамку для руки (если имеются данные) зеленым
       if (latestHandLandmarks) {
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
         latestHandLandmarks.forEach(pt => {
@@ -360,12 +359,12 @@
         const boxY = minY * overlayCanvas.height;
         const boxW = (maxX - minX) * overlayCanvas.width;
         const boxH = (maxY - minY) * overlayCanvas.height;
-        overlayCtx.strokeStyle = 'lime';
+        overlayCtx.strokeStyle = 'green';
         overlayCtx.lineWidth = 3;
         overlayCtx.strokeRect(boxX, boxY, boxW, boxH);
       }
       
-      // Рисуем рамки для лиц
+      // Рисуем рамки для лиц (желтым)
       latestFaceDetections.forEach(det => {
         const { x, y, width, height } = det.detection.box;
         overlayCtx.strokeStyle = 'yellow';
@@ -380,7 +379,7 @@
         overlayCtx.fillText(`Возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
       });
       
-      // Рисуем рамки для объектов (с использованием bbox от COCO-SSD)
+      // Рисуем рамки для объектов, используя bbox от COCO-SSD
       latestObjectDetections.forEach(pred => {
         const [x, y, width, height] = pred.bbox;
         let color = 'yellow';
