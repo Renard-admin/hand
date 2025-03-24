@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <title>Умное распознавание лиц, рук и объектов</title>
+  <meta charset="UTF-8">
+  <title>Интерактивное веб-приложение</title>
   <style>
     body, html {
       margin: 0;
@@ -10,162 +10,106 @@
       overflow: hidden;
       background: #333;
       color: #fff;
-      font-family: sans-serif;
+      font-family: Arial, sans-serif;
     }
-    #container {
+    #videoContainer {
       position: relative;
-      width: 100vw;
-      height: 100vh;
-      background: #000;
     }
     video, canvas {
       position: absolute;
       top: 0;
       left: 0;
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      /* Зеркальное отображение */
-      transform: scaleX(-1);
     }
-    /* Canvas для оверлеев лиц и объектов */
-    #overlay {
-      z-index: 15;
-      pointer-events: none;
-    }
-    #info {
+    #controls {
       position: absolute;
-      top: 10px;
+      bottom: 10px;
       left: 10px;
-      background: rgba(0,0,0,0.5);
-      padding: 5px 10px;
-      border-radius: 4px;
-      z-index: 20;
+      z-index: 10;
     }
-    /* Кнопка полноэкранного режима */
-    #fullscreenBtn {
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      z-index: 20;
-      padding: 10px 20px;
-      background: rgba(0,0,0,0.7);
-      color: #fff;
-      border: none;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 16px;
-    }
-    #fullscreenBtn:hover {
-      background: rgba(0,0,0,0.9);
+    button {
+      margin-right: 10px;
+      padding: 10px;
+      font-size: 14px;
     }
   </style>
 </head>
 <body>
-  <div id="container">
-    <!-- Видео с камеры -->
-    <video id="video" playsinline muted></video>
-    <!-- Canvas для отрисовки кадров (руки) -->
-    <canvas id="output"></canvas>
-    <!-- Canvas для рисования линий (рисование по жесту) -->
-    <canvas id="drawLayer"></canvas>
-    <!-- Canvas для оверлеев (лица и объекты) -->
+  <div id="videoContainer">
+    <!-- Видео с зеркальным эффектом -->
+    <video id="video" autoplay playsinline style="transform: scaleX(-1);"></video>
+    <!-- Холст для отрисовки рамок и линий -->
     <canvas id="overlay"></canvas>
-    <div id="info">
-      Лица: жёлтая рамка, надпись – возраст и настроение<br>
-      Объекты: опасные – красные, еда – зелёные, остальные – жёлтые<br>
-      Руки: зелёная рамка (Mediapipe Hands), жесты для рисования<br>
-      Кнопка: "Полный экран"
-    </div>
+  </div>
+  <div id="controls">
     <button id="fullscreenBtn">Полный экран</button>
+    <button id="switchCamBtn">Переключить камеру</button>
   </div>
 
-  <!-- Подключение библиотек -->
-  <!-- Mediapipe Hands и утилиты -->
+  <!-- Подключаем Mediapipe Hands -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
-  <!-- Face‑api.js -->
-  <!-- Если у вас есть URL с моделями, можно заменить '/models' на полный URL -->
-  <script src="https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"></script>
-  <!-- TensorFlow.js и COCO‑SSD -->
-  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.20.0/dist/tf.min.js"></script>
+  <!-- Подключаем face‑api.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/face-api.js"></script>
+  <!-- Подключаем TensorFlow.js и модель COCO-SSD -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
   <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
 
   <script>
-    /***** Элементы страницы и контексты *****/
-    const videoElement = document.getElementById('video');
-    const outputCanvas = document.getElementById('output');
-    const drawCanvas = document.getElementById('drawLayer');
-    const overlayCanvas = document.getElementById('overlay');
-    const infoDiv = document.getElementById('info');
+    // Элементы страницы
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
     const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const switchCamBtn = document.getElementById('switchCamBtn');
 
-    const outputCtx = outputCanvas.getContext('2d');
-    const drawCtx = drawCanvas.getContext('2d');
-    const overlayCtx = overlayCanvas.getContext('2d');
+    // Переменные для камеры и режима рисования
+    let currentStream;
+    let currentFacingMode = 'user'; // 'user' – передняя, 'environment' – задняя
+    let drawingMode = false;
+    let drawingPath = [];
+    let fistCount = 0;
+    let lastGesture = '';
+    let gestureTimeout;
 
-    /***** Полноэкранный режим *****/
+    // Списки опасных объектов и еды для COCO-SSD
+    const dangerousObjects = ['knife', 'pistol', 'scissors'];
+    const foodObjects = ['apple', 'banana', 'pizza', 'orange', 'sandwich'];
+
+    // Запуск камеры с нужной facingMode
+    async function startCamera() {
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+      const constraints = { video: { facingMode: currentFacingMode } };
+      try {
+        currentStream = await navigator.mediaDevices.getUserMedia(constraints);
+        video.srcObject = currentStream;
+        video.onloadedmetadata = () => {
+          video.play();
+          overlay.width = video.videoWidth;
+          overlay.height = video.videoHeight;
+          startProcessing();
+        };
+      } catch (err) {
+        console.error('Ошибка доступа к камере:', err);
+      }
+    }
+
+    // Обработчики кнопок
     fullscreenBtn.addEventListener('click', () => {
       if (document.fullscreenElement) {
         document.exitFullscreen();
       } else {
-        document.getElementById('container').requestFullscreen();
+        document.documentElement.requestFullscreen();
       }
     });
 
-    /***** Функция изменения размеров canvas *****/
-    function resizeCanvases() {
-      const width = videoElement.videoWidth || window.innerWidth;
-      const height = videoElement.videoHeight || window.innerHeight;
-      outputCanvas.width = width;
-      outputCanvas.height = height;
-      drawCanvas.width = width;
-      drawCanvas.height = height;
-      overlayCanvas.width = width;
-      overlayCanvas.height = height;
-    }
+    switchCamBtn.addEventListener('click', () => {
+      currentFacingMode = (currentFacingMode === 'user') ? 'environment' : 'user';
+      startCamera();
+    });
 
-    /***** Mediapipe Hands (распознавание рук и жестов) *****/
-    let fistCount = 0;
-    let gestureActive = false;
-    let lastFistState = false;
-    let lastTimeFist = 0;
-
-    function isFingerExtended(landmarks, pipIdx, tipIdx) {
-      const pip = landmarks[pipIdx];
-      const tip = landmarks[tipIdx];
-      const wrist = landmarks[0];
-      const distTip = Math.hypot(tip.x - wrist.x, tip.y - wrist.y);
-      const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
-      return distTip > distPip * 1.3;
-    }
-    function isFist(landmarks) {
-      const fingers = [
-        { pip: 6, tip: 8 },
-        { pip: 10, tip: 12 },
-        { pip: 14, tip: 16 },
-        { pip: 18, tip: 20 }
-      ];
-      const thumbExtended = isFingerExtended(landmarks, 2, 4);
-      const othersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return (!thumbExtended) && othersFolded;
-    }
-    function isIndexPointing(landmarks) {
-      const indexExtended = isFingerExtended(landmarks, 6, 8);
-      const othersFolded = [{ pip: 10, tip: 12 }, { pip: 14, tip: 16 }, { pip: 18, tip: 20 }]
-                              .every(f => !isFingerExtended(landmarks, f.pip, f.tip));
-      return indexExtended && othersFolded;
-    }
-    function isOkGesture(landmarks) {
-      const thumbTip = landmarks[4];
-      const indexTip = landmarks[8];
-      const dx = thumbTip.x - indexTip.x;
-      const dy = thumbTip.y - indexTip.y;
-      const dist = Math.hypot(dx, dy);
-      return dist < 0.05;
-    }
-
+    // Инициализация Mediapipe Hands
     const hands = new Hands({
       locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
     });
@@ -173,186 +117,149 @@
       maxNumHands: 1,
       modelComplexity: 1,
       minDetectionConfidence: 0.7,
-      minTrackingConfidence: 0.7
+      minTrackingConfidence: 0.5
     });
-    hands.onResults((results) => {
-      if (!outputCanvas.width || !outputCanvas.height) {
-        resizeCanvases();
-      }
-      outputCtx.save();
-      outputCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
-      outputCtx.drawImage(results.image, 0, 0, outputCanvas.width, outputCanvas.height);
-      
-      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-        const landmarks = results.multiHandLandmarks[0];
-        let minX = 1, minY = 1, maxX = 0, maxY = 0;
-        landmarks.forEach(pt => {
-          if (pt.x < minX) minX = pt.x;
-          if (pt.y < minY) minY = pt.y;
-          if (pt.x > maxX) maxX = pt.x;
-          if (pt.y > maxY) maxY = pt.y;
-        });
-        const boxX = minX * outputCanvas.width;
-        const boxY = minY * outputCanvas.height;
-        const boxW = (maxX - minX) * outputCanvas.width;
-        const boxH = (maxY - minY) * outputCanvas.height;
-        // Рисуем зелёную рамку для руки
-        outputCtx.strokeStyle = 'green';
-        outputCtx.lineWidth = 3;
-        outputCtx.strokeRect(boxX, boxY, boxW, boxH);
+    hands.onResults(onHandsResults);
 
-        const now = Date.now();
-        if (now - lastTimeFist > 700) {
-          const fist = isFist(landmarks);
-          if (fist !== lastFistState) {
-            lastFistState = fist;
-            lastTimeFist = now;
-            if (fist) {
-              fistCount++;
-              console.log("Кулак обнаружен. Счёт:", fistCount);
-            }
-          }
-        }
-        if (!gestureActive && fistCount >= 2 && isIndexPointing(landmarks)) {
-          gestureActive = true;
-          console.log("Режим рисования активирован");
-        }
-        if (gestureActive) {
-          const indexTip = landmarks[8];
-          const x = indexTip.x * drawCanvas.width;
-          const y = indexTip.y * drawCanvas.height;
-          // Рисуем черную точку для линии
-          drawCtx.fillStyle = 'black';
-          drawCtx.beginPath();
-          drawCtx.arc(x, y, 4, 0, 2 * Math.PI);
-          drawCtx.fill();
-        }
-        if (gestureActive && isOkGesture(landmarks)) {
-          console.log("Жест OK обнаружен, очистка холста");
-          drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
-          gestureActive = false;
-          fistCount = 0;
-        }
-      }
-      outputCtx.restore();
-    });
+    // Основной цикл обработки
+    async function startProcessing() {
+      // Загрузка моделей face‑api.js (необходимо разместить модели в папке /models)
+      await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
+      await faceapi.nets.ageGenderNet.loadFromUri('/models');
+      await faceapi.nets.faceExpressionNet.loadFromUri('/models');
 
-    /***** Распознавание лиц с помощью face‑api.js *****/
-    async function loadFaceModels() {
-      try {
-        // Если нужно, можно заменить '/models' на полный URL к моделям
-        await faceapi.nets.tinyFaceDetector.loadFromUri('/models');
-        await faceapi.nets.ageGenderNet.loadFromUri('/models');
-        await faceapi.nets.faceExpressionNet.loadFromUri('/models');
-        console.log("Face‑api модели загружены");
-      } catch (err) {
-        console.error("Ошибка загрузки моделей face-api:", err);
-      }
-    }
-    async function detectFaces() {
-      if (videoElement.readyState < 2) return;
-      try {
-        const detections = await faceapi
-          .detectAllFaces(videoElement, new faceapi.TinyFaceDetectorOptions())
-          .withAgeAndGender()
-          .withFaceExpressions();
-        // Очищаем overlay перед каждой итерацией
-        overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        detections.forEach(det => {
-          const { age, expressions, detection: box } = det;
-          const sorted = Object.entries(expressions).sort((a, b) => b[1] - a[1]);
-          const emotion = sorted[0][0];
-          overlayCtx.strokeStyle = 'yellow';
-          overlayCtx.lineWidth = 2;
-          overlayCtx.strokeRect(box.box.x, box.box.y, box.box.width, box.box.height);
-          overlayCtx.fillStyle = 'yellow';
-          overlayCtx.font = "16px sans-serif";
-          overlayCtx.fillText(`Возраст: ${Math.round(age)}, ${emotion}`, box.box.x, box.box.y - 5);
-        });
-      } catch (err) {
-        console.error("Ошибка распознавания лиц:", err);
-      }
+      // Загрузка модели COCO-SSD
+      window.cocoModel = await cocoSsd.load();
+
+      requestAnimationFrame(processFrame);
     }
 
-    /***** Обнаружение объектов с COCO‑SSD *****/
-    let cocoModel = null;
-    const dangerousObjects = ['knife', 'gun', 'scissors'];
-    const foodObjects = ['banana', 'apple', 'sandwich', 'orange', 'broccoli', 'hot dog', 'pizza'];
-    async function loadCOCOModel() {
-      try {
-        cocoModel = await cocoSsd.load();
-        console.log("COCO‑SSD модель загружена");
-      } catch (err) {
-        console.error("Ошибка загрузки COCO‑SSD модели:", err);
-      }
-    }
-    async function detectObjects() {
-      if (!cocoModel) return;
-      try {
-        const predictions = await cocoModel.detect(videoElement);
-        predictions.forEach(pred => {
-          const [x, y, width, height] = pred.bbox;
+    async function processFrame() {
+      // Отрисовка текущего кадра видео на холсте
+      ctx.drawImage(video, 0, 0, overlay.width, overlay.height);
+
+      // Обработка рук с помощью Mediapipe Hands
+      await hands.send({ image: video });
+
+      // Распознавание лиц с помощью face‑api.js
+      const detections = await faceapi
+        .detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+        .withAgeAndGender()
+        .withFaceExpressions();
+
+      detections.forEach(detection => {
+        const { x, y, width, height } = detection.detection.box;
+        ctx.strokeStyle = 'yellow';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x, y, width, height);
+        // Определяем доминирующую эмоцию
+        let expressions = detection.expressions;
+        let maxEmotion = Object.keys(expressions).reduce((a, b) => expressions[a] > expressions[b] ? a : b);
+        ctx.fillStyle = 'yellow';
+        ctx.font = '16px Arial';
+        ctx.fillText(`Возраст: ${Math.round(detection.age)} ${maxEmotion}`, x, y - 10);
+      });
+
+      // Распознавание объектов с помощью COCO-SSD
+      window.cocoModel.detect(video).then(predictions => {
+        predictions.forEach(prediction => {
+          const [x, y, width, height] = prediction.bbox;
+          let label = prediction.class;
           let color = 'yellow';
-          let label = pred.class;
-          if (dangerousObjects.includes(pred.class.toLowerCase())) {
+          if (dangerousObjects.includes(label.toLowerCase())) {
             color = 'red';
-            label = `опасный: ${pred.class}`;
-          } else if (foodObjects.includes(pred.class.toLowerCase())) {
+            label = `опасный: ${label}`;
+          } else if (foodObjects.includes(label.toLowerCase())) {
             color = 'green';
-            label = `еда: ${pred.class}`;
+            label = `еда: ${label}`;
           }
-          overlayCtx.strokeStyle = color;
-          overlayCtx.lineWidth = 2;
-          overlayCtx.strokeRect(x, y, width, height);
-          overlayCtx.fillStyle = color;
-          overlayCtx.font = "16px sans-serif";
-          overlayCtx.fillText(label, x, y - 5);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 2;
+          ctx.strokeRect(x, y, width, height);
+          ctx.fillStyle = color;
+          ctx.font = '16px Arial';
+          ctx.fillText(label, x, y > 20 ? y - 5 : y + 15);
         });
-      } catch (err) {
-        console.error("Ошибка распознавания объектов:", err);
+      });
+
+      // Если активирован режим рисования, отрисовываем линию
+      if (drawingMode && drawingPath.length > 1) {
+        ctx.strokeStyle = 'black';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(drawingPath[0].x, drawingPath[0].y);
+        for (let i = 1; i < drawingPath.length; i++) {
+          ctx.lineTo(drawingPath[i].x, drawingPath[i].y);
+        }
+        ctx.stroke();
       }
+      requestAnimationFrame(processFrame);
     }
 
-    /***** Основной цикл обнаружения лиц и объектов *****/
-    async function detectionLoop() {
-      await detectFaces();
-      await detectObjects();
-      requestAnimationFrame(detectionLoop);
-    }
-
-    /***** Запрос доступа к камере и запуск *****/
-    async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 640, height: 480, facingMode: "user" },
-          audio: false
-        });
-        videoElement.srcObject = stream;
-        await videoElement.play();
-      } catch (err) {
-        console.error("Ошибка доступа к камере:", err);
+    // Обработка результатов от Mediapipe Hands
+    function onHandsResults(results) {
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
         return;
       }
-      resizeCanvases();
-      // Запускаем Mediapipe Camera для распознавания рук
-      const cameraInstance = new Camera(videoElement, {
-        onFrame: async () => {
-          await hands.send({ image: videoElement });
-        },
-        width: 640,
-        height: 480
+      const landmarks = results.multiHandLandmarks[0];
+
+      // Вычисление ограничивающего прямоугольника руки
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      landmarks.forEach(point => {
+        minX = Math.min(minX, point.x * overlay.width);
+        minY = Math.min(minY, point.y * overlay.height);
+        maxX = Math.max(maxX, point.x * overlay.width);
+        maxY = Math.max(maxY, point.y * overlay.height);
       });
-      cameraInstance.start();
+      ctx.strokeStyle = 'green';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(minX, minY, maxX - minX, maxY - minY);
+
+      // Простейшая логика жестов:
+      // Считаем «сжатие кулака», если расстояние от запястья (landmark 0) до кончика среднего пальца (landmark 12) мало.
+      const wrist = landmarks[0];
+      const middleTip = landmarks[12];
+      const dx = (middleTip.x - wrist.x) * overlay.width;
+      const dy = (middleTip.y - wrist.y) * overlay.height;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 40) { // Жест "кулак"
+        if (lastGesture !== 'fist') {
+          fistCount++;
+          lastGesture = 'fist';
+          clearTimeout(gestureTimeout);
+          gestureTimeout = setTimeout(() => { lastGesture = ''; }, 1000);
+        }
+      } else {
+        // Если указательный палец (landmark 8) отстоит от запястья – считаем, что он вытянут
+        const indexTip = landmarks[8];
+        const idxDx = (indexTip.x - wrist.x) * overlay.width;
+        const idxDy = (indexTip.y - wrist.y) * overlay.height;
+        const idxDist = Math.sqrt(idxDx * idxDx + idxDy * idxDy);
+        if (idxDist > 60 && lastGesture !== 'index') {
+          lastGesture = 'index';
+          // Если ранее было два «кулака», активируем режим рисования
+          if (fistCount >= 2) {
+            drawingMode = true;
+            drawingPath = [];
+          }
+          if (drawingMode) {
+            drawingPath.push({ x: indexTip.x * overlay.width, y: indexTip.y * overlay.height });
+          }
+        }
+      }
+      // Обнаружение жеста "OK": расстояние между большим (landmark 4) и указательным (landmark 8) пальцами мало
+      const thumbTip = landmarks[4];
+      const okDx = (thumbTip.x - landmarks[8].x) * overlay.width;
+      const okDy = (thumbTip.y - landmarks[8].y) * overlay.height;
+      const okDist = Math.sqrt(okDx * okDx + okDy * okDy);
+      if (okDist < 30) { // Жест "OK" – очищаем рисунок
+        drawingMode = false;
+        drawingPath = [];
+        fistCount = 0;
+      }
     }
 
-    /***** Загрузка моделей и запуск цикла обнаружения *****/
-    loadFaceModels();
-    loadCOCOModel().then(() => {
-      detectionLoop();
-    });
-    window.addEventListener('resize', resizeCanvases);
-
-    // Запуск камеры с явным запросом доступа
+    // Запуск приложения
     startCamera();
   </script>
 </body>
