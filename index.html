@@ -27,7 +27,7 @@
       height: 100%;
       object-fit: cover;
     }
-    /* Зеркальный эффект (по умолчанию включен) */
+    /* Зеркальный эффект (по умолчанию включён) */
     .mirror {
       transform: scaleX(-1);
     }
@@ -64,7 +64,7 @@
 </head>
 <body>
   <div id="container">
-    <!-- Видео-поток -->
+    <!-- Видео с камеры -->
     <video id="video" autoplay playsinline muted class="mirror"></video>
     <!-- Canvas для отрисовки рамок (рук, лиц, объектов) -->
     <canvas id="overlay" class="mirror"></canvas>
@@ -109,12 +109,12 @@
     let currentFacingMode = "user"; // "user" или "environment"
     let stream = null;
 
-    // Глобальные переменные для распознавания рук
+    // Переменные для распознавания рук и жестов
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
     let lastTimeFist = 0;
-    let lastDrawPoint = null; // для непрерывного рисования
+    let lastDrawPoint = null;
     let latestHandLandmarks = null;
 
     // Глобальные переменные для распознавания лиц и объектов
@@ -124,7 +124,7 @@
     let cocoModel = null;
     let latestObjectDetections = [];
 
-    // Интервалы детекции (мс)
+    // Интервалы для периодической детекции (мс)
     const FACE_INTERVAL = 700;
     const OBJECT_INTERVAL = 700;
 
@@ -185,7 +185,7 @@
       drawCanvas.classList.toggle('mirror');
     });
 
-    // Запрос доступа к камере
+    // Запрашиваем доступ к камере через navigator.mediaDevices.getUserMedia
     async function initCamera(facingMode = "user") {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
@@ -253,13 +253,13 @@
             }
           }
         }
-        // Активация режима рисования: если дважды сжат кулак и затем показан указательный палец
+        // Активация режима рисования: если дважды зафиксирован кулак и затем показан указательный палец
         if (!gestureActive && fistCount >= 2 && isIndexPointing(latestHandLandmarks)) {
           gestureActive = true;
           console.log("Режим рисования активирован");
           lastDrawPoint = null;
         }
-        // Если режим рисования активен – рисуем непрерывную линию по движению указательного пальца
+        // Если режим рисования активен – рисуем линию по движению указательного пальца
         if (gestureActive) {
           const indexTip = latestHandLandmarks[8];
           const x = indexTip.x * drawCanvas.width;
@@ -309,7 +309,7 @@
       console.log("Модель COCO-SSD загружена");
     }
 
-    // Запуск периодической детекции лиц
+    // Периодическая детекция лиц (каждые FACE_INTERVAL мс)
     function startFaceDetectionLoop() {
       setInterval(async () => {
         if (faceModelsLoaded && video.readyState === 4) {
@@ -325,7 +325,7 @@
       }, FACE_INTERVAL);
     }
 
-    // Запуск периодической детекции объектов
+    // Периодическая детекция объектов (каждые OBJECT_INTERVAL мс)
     function startObjectDetectionLoop() {
       setInterval(async () => {
         if (cocoModel && video.readyState === 4) {
@@ -338,11 +338,11 @@
       }, OBJECT_INTERVAL);
     }
 
-    // Функция отрисовки всех оверлеев: рамки для руки, лиц и объектов
+    // Функция объединённой отрисовки оверлеев: рамки для руки, лиц и объектов
     function drawOverlay() {
       overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
       
-      // Рисуем рамку для обнаруженной руки (если имеются данные)
+      // Рисуем рамку для обнаруженной руки (если данные имеются)
       if (latestHandLandmarks) {
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
         latestHandLandmarks.forEach(pt => {
@@ -375,7 +375,7 @@
         overlayCtx.fillText(`Возраст: ${det.age.toFixed(0)}, ${dominantExp}`, x, y - 5);
       });
       
-      // Рисуем рамки для объектов
+      // Рисуем рамки для объектов — используем bbox от COCO-SSD, чтобы рамка была максимально близко к объекту
       latestObjectDetections.forEach(pred => {
         const [x, y, width, height] = pred.bbox;
         let color = 'yellow';
@@ -403,7 +403,6 @@
     // Инициализация всего приложения
     async function initApp() {
       await initCamera(currentFacingMode);
-      // Инициализация распознавания рук происходит сразу после запуска камеры
       await initFaceApi().catch(err => console.error("Ошибка загрузки face-api:", err));
       await initCoco().catch(err => console.error("Ошибка загрузки COCO-SSD:", err));
       startFaceDetectionLoop();
