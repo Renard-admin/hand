@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
-  <title>Улучшенное распознавание жестов, лиц и объектов (зеркало везде)</title>
+  <title>Улучшенное распознавание жестов, лиц и объектов</title>
   <style>
     * { box-sizing: border-box; }
     body, html {
@@ -27,7 +27,7 @@
       height: 100%;
       object-fit: cover;
     }
-    /* Эффект зеркала */
+    /* Зеркальный эффект */
     .mirror {
       transform: scaleX(-1);
     }
@@ -38,14 +38,14 @@
       background: rgba(0,0,0,0.5);
       padding: 5px 10px;
       border-radius: 4px;
-      z-index: 20;
+      z-index: 30;
       font-size: 14px;
     }
     #controls {
       position: absolute;
       bottom: 10px;
       left: 10px;
-      z-index: 20;
+      z-index: 30;
     }
     #controls button {
       margin-right: 10px;
@@ -64,15 +64,16 @@
 </head>
 <body>
   <div id="container">
-    <!-- Видео-поток -->
+    <!-- Видео с камеры -->
     <video id="video" autoplay playsinline muted class="mirror"></video>
-    <!-- Канвас для отрисовки рамок (рук, лиц, объектов) с зеркальным эффектом -->
+    <!-- Canvas для отрисовки рамок (рук, лиц, объектов) -->
     <canvas id="overlay" class="mirror"></canvas>
-    <!-- Слой для рисования линии (режим рисования) с зеркальным эффектом -->
+    <!-- Canvas для рисования линий (режим рисования) -->
     <canvas id="drawLayer" class="mirror"></canvas>
     <div id="info">
-      Жесты: два раза сжать/разжать кулак + указательный = режим рисования; OK = очистить<br>
-      Лицо: возраст и эмоции; Объекты: опасные (красные), еда (зелёные), остальные (жёлтые)
+      Жесты: два раза сжать/разжать кулак + указательный = режим рисования<br>
+      Жест OK = очистка рисунка<br>
+      Лицо: возраст и эмоция; Объекты: опасные (красные), еда (зелёные), остальные (жёлтые)
     </div>
     <div id="controls">
       <button id="fullscreenBtn">Полный экран</button>
@@ -105,23 +106,18 @@
     const infoDiv = document.getElementById('info');
     const container = document.getElementById('container');
 
-    // Глобальные переменные
+    // Глобальные переменные камеры
     let currentFacingMode = "user"; // "user" или "environment"
     let stream = null;
-    let hands = null;
-    let cameraMediapipe = null;
-    let faceDetectionOptions;
-    let faceModelsLoaded = false;
-    let cocoModel = null;
-    let mirrorEnabled = true;
 
-    // Жесты рук
+    // Переменные для жестов рук
     let fistCount = 0;
     let gestureActive = false;
     let lastFistState = false;
     let lastTimeFist = 0;
+    let lastDrawPoint = null; // для рисования линии
 
-    // Определение "сжатости" пальцев (эвристика)
+    // Функции для определения состояния пальцев (эвристика)
     function isFingerExtended(landmarks, pipIdx, tipIdx) {
       const pip = landmarks[pipIdx];
       const tip = landmarks[tipIdx];
@@ -130,7 +126,6 @@
       const distPip = Math.hypot(pip.x - wrist.x, pip.y - wrist.y);
       return distTip > distPip * 1.3;
     }
-
     function isFist(landmarks) {
       const fingers = [
         { pip: 6, tip: 8 },
@@ -138,11 +133,10 @@
         { pip: 14, tip: 16 },
         { pip: 18, tip: 20 }
       ];
-      let thumbExtended = isFingerExtended(landmarks, 2, 4);
-      let othersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
+      const thumbExtended = isFingerExtended(landmarks, 2, 4);
+      const othersFolded = fingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
       return (!thumbExtended) && othersFolded;
     }
-
     function isIndexPointing(landmarks) {
       const indexExtended = isFingerExtended(landmarks, 6, 8);
       const otherFingers = [
@@ -150,10 +144,9 @@
         { pip: 14, tip: 16 },
         { pip: 18, tip: 20 }
       ];
-      let othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
+      const othersFolded = otherFingers.every(f => !isFingerExtended(landmarks, f.pip, f.tip));
       return indexExtended && othersFolded;
     }
-
     function isOkGesture(landmarks) {
       const thumbTip = landmarks[4];
       const indexTip = landmarks[8];
@@ -163,7 +156,25 @@
       return dist < 0.05;
     }
 
-    // Инициализация камеры с указанным facingMode
+    // Кнопки управления
+    fullscreenBtn.addEventListener('click', () => {
+      if (document.fullscreenElement) {
+        document.exitFullscreen();
+      } else {
+        container.requestFullscreen();
+      }
+    });
+    switchCameraBtn.addEventListener('click', () => {
+      currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
+      initCamera(currentFacingMode);
+    });
+    toggleMirrorBtn.addEventListener('click', () => {
+      video.classList.toggle('mirror');
+      overlayCanvas.classList.toggle('mirror');
+      drawCanvas.classList.toggle('mirror');
+    });
+
+    // Запрос доступа к камере
     async function initCamera(facingMode = "user") {
       if (stream) {
         stream.getTracks().forEach(track => track.stop());
@@ -186,71 +197,50 @@
       };
     }
 
-    // Пересчет размеров канвасов под размеры видео
+    // Подгон размеров canvas под видео
     function resizeCanvases() {
       overlayCanvas.width = video.videoWidth || window.innerWidth;
       overlayCanvas.height = video.videoHeight || window.innerHeight;
       drawCanvas.width = overlayCanvas.width;
       drawCanvas.height = overlayCanvas.height;
     }
-
-    // Полноэкранный режим
-    fullscreenBtn.addEventListener('click', () => {
-      if (document.fullscreenElement) {
-        document.exitFullscreen();
-      } else {
-        container.requestFullscreen();
-      }
-    });
-
-    // Переключение камеры
-    switchCameraBtn.addEventListener('click', () => {
-      currentFacingMode = (currentFacingMode === "user") ? "environment" : "user";
-      initCamera(currentFacingMode);
-    });
-
-    // Переключение зеркального эффекта на всех элементах
-    toggleMirrorBtn.addEventListener('click', () => {
-      mirrorEnabled = !mirrorEnabled;
-      video.classList.toggle('mirror', mirrorEnabled);
-      overlayCanvas.classList.toggle('mirror', mirrorEnabled);
-      drawCanvas.classList.toggle('mirror', mirrorEnabled);
-    });
+    window.addEventListener('resize', resizeCanvases);
 
     // Инициализация Mediapipe Hands
-    function initMediapipeHands() {
-      hands = new Hands({
-        locateFile: (file) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
-        }
-      });
-      hands.setOptions({
-        maxNumHands: 1,
-        modelComplexity: 1,
-        minDetectionConfidence: 0.7,
-        minTrackingConfidence: 0.7
-      });
-      hands.onResults(onHandsResults);
-      cameraMediapipe = new Camera(video, {
-        onFrame: async () => {
-          await hands.send({ image: video });
-        },
-        width: 640,
-        height: 480
-      });
-      cameraMediapipe.start();
-    }
+    let hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.7
+    });
+    hands.onResults(onHandsResults);
+
+    const cameraUtils = new Camera(video, {
+      onFrame: async () => { await hands.send({ image: video }); },
+      width: 640,
+      height: 480
+    });
+    cameraUtils.start();
 
     // Обработка результатов от Mediapipe Hands
     function onHandsResults(results) {
-      // Очищаем overlayCanvas
-      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      // Если размеры canvas не заданы, установить их
+      if (!overlayCanvas.width || !overlayCanvas.height) {
+        resizeCanvases();
+      }
 
+      // Отрисовка видео на overlay (для рамок и аннотаций)
       overlayCtx.save();
+      overlayCtx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      overlayCtx.drawImage(results.image, 0, 0, overlayCanvas.width, overlayCanvas.height);
+
       if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
         const landmarks = results.multiHandLandmarks[0];
 
-        // Вычисляем ограничивающий прямоугольник руки
+        // Вычисление ограничивающего прямоугольника руки
         let minX = 1, minY = 1, maxX = 0, maxY = 0;
         landmarks.forEach(pt => {
           if (pt.x < minX) minX = pt.x;
@@ -262,7 +252,7 @@
         const boxY = minY * overlayCanvas.height;
         const boxW = (maxX - minX) * overlayCanvas.width;
         const boxH = (maxY - minY) * overlayCanvas.height;
-        // Рисуем зелёную рамку для руки
+        // Рисуем зелёную рамку
         overlayCtx.strokeStyle = 'lime';
         overlayCtx.lineWidth = 3;
         overlayCtx.strokeRect(boxX, boxY, boxW, boxH);
@@ -276,34 +266,48 @@
             lastTimeFist = now;
             if (fist) {
               fistCount++;
-              console.log("Кулак обнаружен. Счёт:", fistCount);
+              console.log("Кулак обнаружен, счёт:", fistCount);
             }
           }
         }
         if (!gestureActive && fistCount >= 2 && isIndexPointing(landmarks)) {
           gestureActive = true;
           console.log("Режим рисования активирован");
+          // При входе в режим рисования сбрасываем последнюю точку
+          lastDrawPoint = null;
         }
         if (gestureActive) {
+          // Рисование линии по движению указательного пальца
           const indexTip = landmarks[8];
           const x = indexTip.x * drawCanvas.width;
           const y = indexTip.y * drawCanvas.height;
-          drawCtx.fillStyle = 'black';
-          drawCtx.beginPath();
-          drawCtx.arc(x, y, 4, 0, 2 * Math.PI);
-          drawCtx.fill();
+          if (!lastDrawPoint) {
+            lastDrawPoint = { x, y };
+          } else {
+            drawCtx.strokeStyle = 'black';
+            drawCtx.lineWidth = 4;
+            drawCtx.lineCap = 'round';
+            drawCtx.beginPath();
+            drawCtx.moveTo(lastDrawPoint.x, lastDrawPoint.y);
+            drawCtx.lineTo(x, y);
+            drawCtx.stroke();
+            lastDrawPoint = { x, y };
+          }
         }
         if (gestureActive && isOkGesture(landmarks)) {
           console.log("Жест OK обнаружен, очистка рисунка");
           drawCtx.clearRect(0, 0, drawCanvas.width, drawCanvas.height);
           gestureActive = false;
           fistCount = 0;
+          lastDrawPoint = null;
         }
       }
       overlayCtx.restore();
     }
 
-    // Инициализация face-api.js: загрузка моделей
+    // --- Распознавание лиц с face-api.js ---
+    let faceModelsLoaded = false;
+    let faceDetectionOptions;
     async function initFaceApi() {
       const MODEL_URL = '/models';
       await Promise.all([
@@ -316,7 +320,8 @@
       console.log("Модели face-api загружены");
     }
 
-    // Инициализация COCO-SSD
+    // --- Обнаружение объектов с COCO-SSD ---
+    let cocoModel = null;
     async function initCoco() {
       cocoModel = await cocoSsd.load();
       console.log("Модель COCO-SSD загружена");
@@ -325,9 +330,10 @@
     // Обработка кадра для распознавания лиц и объектов
     async function processFrame() {
       if (video.readyState === 4) {
+        // Обновляем размеры canvas
         resizeCanvases();
 
-        // Распознавание лиц
+        // Если загружены модели распознавания лиц
         if (faceModelsLoaded) {
           const detections = await faceapi.detectAllFaces(video, faceDetectionOptions)
             .withAgeAndGender()
@@ -352,12 +358,12 @@
             const [x, y, width, height] = pred.bbox;
             let color = 'yellow';
             let labelPrefix = "";
-            const dangerousObjects = ['knife', 'pistol', 'scissors'];
-            const foodObjects = ['apple', 'banana', 'pizza', 'orange', 'sandwich'];
-            if (dangerousObjects.includes(pred.class.toLowerCase())) {
+            const dangerous = ['knife', 'pistol', 'scissors'];
+            const food = ['apple', 'banana', 'pizza', 'orange', 'sandwich'];
+            if (dangerous.includes(pred.class.toLowerCase())) {
               color = 'red';
               labelPrefix = "опасный: ";
-            } else if (foodObjects.includes(pred.class.toLowerCase())) {
+            } else if (food.includes(pred.class.toLowerCase())) {
               color = 'green';
               labelPrefix = "еда: ";
             }
@@ -373,16 +379,14 @@
       requestAnimationFrame(processFrame);
     }
 
-    // Инициализация всех компонентов
+    // Инициализация всего приложения
     async function initApp() {
       await initCamera(currentFacingMode);
-      initMediapipeHands();
-      initFaceApi().catch(err => console.error("Ошибка загрузки face-api моделей:", err));
-      initCoco().catch(err => console.error("Ошибка загрузки модели COCO-SSD:", err));
+      initFaceApi().catch(err => console.error("Ошибка загрузки face-api:", err));
+      initCoco().catch(err => console.error("Ошибка загрузки COCO-SSD:", err));
       processFrame();
     }
 
-    window.addEventListener('resize', resizeCanvases);
     window.addEventListener('load', initApp);
   </script>
 </body>
